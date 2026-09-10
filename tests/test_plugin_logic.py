@@ -210,12 +210,12 @@ class TriggerTests(unittest.TestCase):
         self.plugin = make_plugin(DEFAULT_CONFIG)
 
     def test_trigger_regex_matches_command_forms(self):
-        for text in [
-            "拼豆", "/拼豆", "拼豆 一起", "颜文字", "/颜文字",
-            "颜文字 看这个", "/kaomoji", "字符画", "/字符画",
-        ]:
+        for text in ["/拼豆", "/拼豆 看这个", "/ 拼豆"]:
             self.assertRegex(text.strip(), main.TRIGGER_REGEX, msg=text)
-        for text in ["这个颜文字好可爱", "颜文字好可爱", "ks颜文字", "帮我画字符画", "喜欢颜文字，", "来拼豆吗"]:
+        for text in [
+            "拼豆", "颜文字", "/颜文字", "/kaomoji", "/字符画",
+            "这个颜文字好可爱", "来拼豆吗", "ks拼豆", "/pindouba",
+        ]:
             self.assertNotRegex(text.strip(), main.TRIGGER_REGEX, msg=text)
 
     def test_claim_dedupes_message(self):

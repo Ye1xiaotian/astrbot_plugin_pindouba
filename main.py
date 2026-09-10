@@ -27,12 +27,13 @@ IMAGE_RECALL_SECONDS = 600
 CLAIM_TTL_SECONDS = 120
 
 USAGE_TEXT = (
-    "用法：发送「拼豆」或「/拼豆」并附带一张图片，我会把图片拼成一幅彩色拼豆画。\n"
-    "也可以：引用一张图片回复该指令，或先发送图片、再在 10 分钟内发送该指令。\n"
+    "用法：发送 /拼豆 并附带一张图片，我会把图片拼成一幅彩色拼豆画。\n"
+    "也可以：引用一张图片回复 /拼豆，或先发送图片、再在 10 分钟内发送 /拼豆。\n"
     "（当前消息未检测到图片）"
 )
 PROCESSING_TEXT = "正在埋头拼豆，请稍候…"
-TRIGGER_REGEX = r"^\s*/?\s*(?:拼豆|颜文字|kaomoji|字符画)(?:\s|$)"
+TRIGGER_REGEX = r"^\s*/\s*拼豆(?:\s|$)"
+"""The one wake word: /拼豆 (slash required; not affected by wake_prefix)."""
 """Fallback trigger pattern; matches the command with or without a slash
 prefix regardless of the host's wake_prefix configuration."""
 
@@ -104,17 +105,9 @@ class PindoubaPlugin(Star):
     # Entry points
     # ------------------------------------------------------------------ #
 
-    @filter.command("拼豆", alias={"颜文字", "kaomoji", "字符画"})
-    async def kaomoji_command(self, event: AstrMessageEvent):
-        """Convert an attached image into a bead mosaic."""
-        if not self._claim(event):
-            return
-        async for result in self._handle_trigger(event):
-            yield result
-
     @filter.regex(TRIGGER_REGEX)
-    async def kaomoji_regex(self, event: AstrMessageEvent):
-        """Regex fallback so the command works regardless of wake_prefix."""
+    async def pindouba_trigger(self, event: AstrMessageEvent):
+        """The one true entry point: `/拼豆` (+ image), regardless of wake_prefix."""
         if not self._claim(event):
             return
         async for result in self._handle_trigger(event):
@@ -135,13 +128,7 @@ class PindoubaPlugin(Star):
             return
 
         text = (event.message_str or "").strip()
-        if (
-            text.startswith("/")
-            or "拼豆" in text
-            or "颜文字" in text
-            or "kaomoji" in text.lower()
-            or "字符画" in text
-        ):
+        if text.startswith("/") or "拼豆" in text:
             return
 
         self_id = str(event.get_self_id())
