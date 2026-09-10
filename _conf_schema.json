@@ -1,0 +1,102 @@
+{
+    "provider_id": {
+        "description": "多模态模型（提供商）ID",
+        "hint": "用于识别图片类型、裁剪主体和生成说明文字，需支持图片输入（如 qwen-vl / gemini / gpt-4o / glm-4v）。留空使用当前会话默认模型。注意：即使不配置或模型失败，字符画仍会按原图直接渲染，只是没有智能裁剪和识别说明。",
+        "type": "string",
+        "default": ""
+    },
+    "call_timeout_seconds": {
+        "description": "单次模型调用超时（秒）",
+        "hint": "图片识别单次调用的超时时间",
+        "type": "int",
+        "slider": {
+            "min": 15,
+            "max": 300,
+            "step": 5
+        },
+        "default": 90
+    },
+    "render_mode": {
+        "description": "渲染模式",
+        "hint": "auto/bead：拼豆风格彩色圆点马赛克，全图逐格覆盖（含背景），还原度最高，推荐；braille：盲文点阵（2×4 点/字符 + 抖动）；shading：灰阶字符梯度 + 抖动，复古终端风；line：Sobel 边缘描线，适合干净线稿",
+        "type": "string",
+        "options": ["auto", "bead", "braille", "shading", "line"],
+        "default": "auto"
+    },
+    "char_width": {
+        "description": "拼豆/字符画宽度（列数）",
+        "hint": "列数越多越接近原图（默认 80）；想更粗的像素感可降到 48-64",
+        "type": "int",
+        "slider": {
+            "min": 16,
+            "max": 120,
+            "step": 4
+        },
+        "default": 80
+    },
+    "bead_palette": {
+        "description": "拼豆色板量化",
+        "hint": "开启后拼豆颜色量化到 56 色经典拼豆色板，手工感更强，但与原图色彩有偏差；默认关闭以忠实还原原图颜色",
+        "type": "bool",
+        "default": false
+    },
+    "auto_crop": {
+        "description": "自动裁剪主体",
+        "hint": "开启后按模型给出的主体框裁掉背景、只保留主体；默认关闭以还原整张图片（含背景）",
+        "type": "bool",
+        "default": false
+    },
+    "color": {
+        "description": "彩色字符",
+        "hint": "字符按原图像素颜色着色（仅 image 发送模式生效）；关闭则单色显示",
+        "type": "bool",
+        "default": true
+    },
+    "send_mode": {
+        "description": "发送形态",
+        "hint": "image：以等宽字体渲染成图片发送（推荐，聊天中不会错位）；text：直接发送字符文本（聊天字体下可能错位，适合复制到等宽编辑器查看）",
+        "type": "string",
+        "options": ["image", "text"],
+        "default": "image"
+    },
+    "allow_at_trigger": {
+        "description": "允许 @机器人 + 图片 触发",
+        "hint": "开启后，@机器人 并附带图片也会触发字符画生成（默认仅命令触发）",
+        "type": "bool",
+        "default": false
+    },
+    "cooldown_seconds": {
+        "description": "冷却时间（秒）",
+        "hint": "同一会话两次触发之间的最小间隔，防止刷屏。0 表示不冷却",
+        "type": "int",
+        "slider": {
+            "min": 0,
+            "max": 600,
+            "step": 5
+        },
+        "default": 30
+    },
+    "cooldown_notice": {
+        "description": "冷却时提示",
+        "hint": "冷却时间内重复触发时是否回复提示。关闭则静默忽略",
+        "type": "bool",
+        "default": true
+    },
+    "enable_cache": {
+        "description": "同图缓存",
+        "hint": "同一张图片（URL 相同）再次触发时跳过模型识别直接渲染，秒回且不消耗 API",
+        "type": "bool",
+        "default": true
+    },
+    "cache_ttl_minutes": {
+        "description": "缓存有效期（分钟）",
+        "hint": "缓存条目超过该时长后失效",
+        "type": "int",
+        "slider": {
+            "min": 10,
+            "max": 1440,
+            "step": 10
+        },
+        "default": 360
+    }
+}

@@ -1,0 +1,1 @@
+# No third-party dependencies. The plugin only uses the AstrBot plugin API.
