@@ -12,7 +12,14 @@ try:
 except ImportError:  # Pillow missing; renderer cannot be tested.
     raise SystemExit("Pillow is required: pip install pillow")
 
-from renderer import BEAD_PALETTE, AsciiArt, paint_ascii_art_png, render_ascii_art
+from renderer import (
+    BEAD_PAD,
+    BEAD_PITCH,
+    BEAD_PALETTE,
+    AsciiArt,
+    paint_ascii_art_png,
+    render_ascii_art,
+)
 
 
 def make_test_image(path: Path, left: int = 0, right: int = 255, size=(100, 50)):
@@ -137,7 +144,7 @@ class BeadTests(unittest.TestCase):
         art = render_ascii_art(self.image, mode="bead", width=40)
         for row in art.rows:
             for ch, color in row:
-                self.assertEqual(ch, "●")
+                self.assertEqual(ch, "■")
                 self.assertGreaterEqual(color[0], 0)
 
     def test_bead_bright_side_is_bright(self):
@@ -168,6 +175,31 @@ class BeadTests(unittest.TestCase):
         paint_ascii_art_png(art, out, color=True)
         self.assertTrue(out.exists())
         self.assertGreater(out.stat().st_size, 0)
+
+    def test_bead_paint_squares_tile_cells(self):
+        # Full-pitch squares: every pixel inside a cell (not just its center)
+        # carries the cell color; bg only remains in the canvas margin.
+        art = render_ascii_art(self.image, mode="bead", width=40)
+        out = self.tmp / "bead_squares.png"
+        paint_ascii_art_png(art, out, color=True)
+        with Image.open(out) as png:
+            self.assertEqual(
+                png.size,
+                (
+                    art.width * BEAD_PITCH + BEAD_PAD * 2,
+                    art.height * BEAD_PITCH + BEAD_PAD * 2,
+                ),
+            )
+            for r, c in [(10, 5), (10, 30)]:  # dark half / bright half cells
+                expected = art.rows[r][c][1]
+                for dx, dy in [(0, 0), (BEAD_PITCH - 1, BEAD_PITCH - 1)]:
+                    px = png.getpixel(
+                        (
+                            BEAD_PAD + c * BEAD_PITCH + dx,
+                            BEAD_PAD + r * BEAD_PITCH + dy,
+                        )
+                    )
+                    self.assertEqual(px, expected)
 
     def test_bead_max_rows_clamps(self):
         art = render_ascii_art(self.image, mode="bead", width=80, max_rows=10)

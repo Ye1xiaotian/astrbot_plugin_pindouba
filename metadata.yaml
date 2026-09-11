@@ -19,6 +19,6 @@ help: |
 
   需要的装备：
     - 可选：一个支持图片输入的对话模型（qwen-vl / gemini / gpt-4o / glm-4v）
-version: v0.4.1
+version: v0.4.2
 author: Ye1xiaotian
 repo: https://github.com/Ye1xiaotian/astrbot_plugin_pindouba

@@ -1,9 +1,10 @@
 """Pixel-to-character-art renderer.
 
-Three render modes:
+Four render modes:
+- bead: full-coverage square-pixel mosaic (the plugin default) - every grid
+  cell is one solid square keeping its averaged source color.
 - braille: 2x4-dot braille matrix (8 sub-pixels per char) with Floyd-Steinberg
-  dithering - by far the most detail at an equal character count; the default
-  for "auto".
+  dithering - by far the most detail at an equal character count.
 - shading: luminance mapped onto a character gradient with error diffusion.
 - line: Sobel edge magnitude computed at 3x resolution, percentile threshold,
   then max-pooling into the character grid (keeps thin strokes alive).
@@ -108,6 +109,8 @@ MONO_FONTS = (
     "Monaco.ttf",  # macOS
     "Arial.ttf",  # generic fallback
 )
+BEAD_PITCH = 12  # square cell size in px
+BEAD_PAD = 6  # canvas margin in px
 
 
 @dataclass
@@ -214,10 +217,10 @@ def paint_ascii_art_png(
 ) -> str:
     """Paint an AsciiArt grid onto a PNG.
 
-    Bead art is drawn as a full-coverage colored dot mosaic (perler-bead
-    style); braille art as fixed-position dot matrices; other kinds are
-    painted with a monospace font, one character per fixed cell, so
-    alignment never depends on the chat client's font.
+    Bead art is drawn as a full-coverage square-pixel mosaic (each cell is
+    one solid square); braille art as fixed-position dot matrices; other
+    kinds are painted with a monospace font, one character per fixed cell,
+    so alignment never depends on the chat client's font.
 
     Args:
         art: The character grid to paint.
@@ -291,22 +294,22 @@ def paint_ascii_art_png(
 def _render_bead(
     img: Image.Image, cols: int, max_rows: int, palette: bool = False
 ) -> AsciiArt:
-    """Render as a perler-bead mosaic: every grid cell is one colored bead.
+    """Render as a square-pixel mosaic: every grid cell is one colored square.
 
     Full coverage - background included - so the whole image stays visible.
-    Beads sit on a square grid; each bead's color is the average of its
+    Cells sit on a square grid; each cell's color is the average of its
     source pixels, optionally quantized to the bead palette.
 
     Args:
         img: Source image (RGB).
-        cols: Bead columns.
-        max_rows: Upper bound of bead rows; the mosaic shrinks (aspect kept)
+        cols: Cell columns.
+        max_rows: Upper bound of cell rows; the mosaic shrinks (aspect kept)
             when it would exceed this.
-        palette: Quantize bead colors to the classic bead palette.
+        palette: Quantize cell colors to the classic bead palette.
 
     Returns:
         The bead AsciiArt grid (kind "bead"; chars are placeholders, the
-        painter draws colored dots).
+        painter draws solid squares).
     """
     w, h = img.size
     rows = max(4, round(h / w * cols))
@@ -324,7 +327,7 @@ def _render_bead(
             color = (raw[3 * i], raw[3 * i + 1], raw[3 * i + 2])
             if palette:
                 color = _nearest_bead_color(color)
-            row.append(("●", color))
+            row.append(("■", color))
         rows_out.append(row)
     return AsciiArt(rows=rows_out, kind="bead")
 
@@ -501,38 +504,33 @@ def _paint_bead_png(
     bg: tuple[int, int, int],
     fg: tuple[int, int, int],
 ) -> str:
-    """Paint a bead mosaic as full-coverage colored dots (2x supersampled).
+    """Paint a square-pixel mosaic: every cell is one solid, full-pitch square.
 
-    Every cell gets exactly one bead, background included, so the whole
-    image stays visible; the board color only shows through the gaps.
+    Squares tile the plane edge to edge, so no board color shows between
+    cells; `bg` only remains visible in the canvas margin.
 
     Args:
         art: The bead grid (kind "bead").
         out_path: Destination PNG path.
-        color: Use per-bead source colors (False paints all beads with fg).
-        bg: Board background color (visible in the gaps between beads).
-        fg: Bead color used when `color` is False.
+        color: Use per-cell source colors (False paints all cells with fg).
+        bg: Canvas margin color.
+        fg: Cell color used when `color` is False.
 
     Returns:
         The destination path (as given).
     """
-    pitch = 12  # bead spacing in px at 1x - chunky beads with visible gaps
-    ss = 2  # supersampling factor for smooth round beads
-    radius = pitch * 0.34 * ss
-    pad = 6 * ss
-    width = art.width * pitch * ss + pad * 2
-    height = art.height * pitch * ss + pad * 2
+    width = art.width * BEAD_PITCH + BEAD_PAD * 2
+    height = art.height * BEAD_PITCH + BEAD_PAD * 2
     canvas = Image.new("RGB", (width, height), bg)
     draw = ImageDraw.Draw(canvas)
     for r, row in enumerate(art.rows):
-        cy = pad + r * pitch * ss + pitch * ss / 2
+        y = BEAD_PAD + r * BEAD_PITCH
         for c, (_, rgb) in enumerate(row):
-            cx = pad + c * pitch * ss + pitch * ss / 2
-            draw.ellipse(
-                [cx - radius, cy - radius, cx + radius, cy + radius],
+            x = BEAD_PAD + c * BEAD_PITCH
+            draw.rectangle(
+                [x, y, x + BEAD_PITCH - 1, y + BEAD_PITCH - 1],
                 fill=rgb if color else fg,
             )
-    canvas = canvas.resize((width // ss, height // ss), Image.LANCZOS)
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     canvas.save(out_path)
     return str(out_path)
