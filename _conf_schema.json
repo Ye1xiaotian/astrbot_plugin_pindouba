@@ -1,7 +1,7 @@
 {
     "provider_id": {
         "description": "多模态模型（提供商）ID",
-        "hint": "用于识别图片类型、裁剪主体和生成说明文字，需支持图片输入（如 qwen-vl / gemini / gpt-4o / glm-4v）。留空使用当前会话默认模型。注意：即使不配置或模型失败，字符画仍会按原图直接渲染，只是没有智能裁剪和识别说明。",
+        "hint": "用于生成识别说明和裁剪主体，需支持图片输入（如 qwen-vl / gemini / gpt-4o / glm-4v）。留空使用当前会话默认模型。仅当 enable_caption 或 auto_crop 开启时才会调用模型；即使不配置或模型失败，字符画仍会按原图直接渲染。",
         "type": "string",
         "default": ""
     },
@@ -40,11 +40,23 @@
         "type": "bool",
         "default": false
     },
-    "auto_crop": {
-        "description": "自动裁剪主体",
-        "hint": "开启后按模型给出的主体框裁掉背景、只保留主体；默认关闭以还原整张图片（含背景）",
+    "bead_dither": {
+        "description": "拼豆色板抖动",
+        "hint": "bead_palette 开启时生效：把每格的选色误差摊给相邻格子（误差扩散），渐变过渡更平滑、不容易出现大块色带，近看会有细颗粒感。bead_palette 关闭时此项无效",
         "type": "bool",
         "default": false
+    },
+    "auto_crop": {
+        "description": "自动裁剪主体",
+        "hint": "开启后按模型给出的主体框裁掉背景、只保留主体（需要模型）；默认关闭以还原整张图片（含背景）",
+        "type": "bool",
+        "default": false
+    },
+    "enable_caption": {
+        "description": "识别说明",
+        "hint": "配了模型时，成品下面附一句\"识别：xxx\"。关闭它（且 auto_crop 也关闭）后完全跳过模型调用：出图最快，也不消耗 API",
+        "type": "bool",
+        "default": true
     },
     "color": {
         "description": "彩色字符",
@@ -54,7 +66,7 @@
     },
     "send_mode": {
         "description": "发送形态",
-        "hint": "image：以等宽字体渲染成图片发送（推荐，聊天中不会错位）；text：直接发送字符文本（聊天字体下可能错位，适合复制到等宽编辑器查看）",
+        "hint": "image：以等宽字体渲染成图片发送（推荐，聊天中不会错位）；text：直接发送字符文本（聊天字体下可能错位，适合复制到等宽编辑器查看）。注意：text 仅对 braille/shading/line 生效，bead（拼豆）没有文本形态，仍会发图片",
         "type": "string",
         "options": ["image", "text"],
         "default": "image"
@@ -67,7 +79,7 @@
     },
     "cooldown_seconds": {
         "description": "冷却时间（秒）",
-        "hint": "同一会话两次触发之间的最小间隔，防止刷屏。0 表示不冷却",
+        "hint": "同一个人在同一会话两次触发的最小间隔，防止刷屏；群聊里各人互不影响。0 表示不冷却",
         "type": "int",
         "slider": {
             "min": 0,
@@ -84,7 +96,7 @@
     },
     "enable_cache": {
         "description": "同图缓存",
-        "hint": "同一张图片（URL 相同）再次触发时跳过模型识别直接渲染，秒回且不消耗 API",
+        "hint": "同一张图片（内容相同即可，链接变了也算）再次触发时跳过模型识别直接出图，不消耗 API",
         "type": "bool",
         "default": true
     },

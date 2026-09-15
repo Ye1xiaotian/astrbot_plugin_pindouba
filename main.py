@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import re
 import time
@@ -88,9 +89,9 @@ class PindoubaPlugin(Star):
         except OSError as e:
             raise RuntimeError(f"[pindouba] failed to load plugin resource: {e}") from e
 
-        # unified_msg_origin -> last trigger timestamp
+        # unified_msg_origin:sid -> last trigger timestamp
         self._last_trigger: dict[str, float] = {}
-        # image ref -> (timestamp, VLM scene params)
+        # image content hash -> (timestamp, VLM scene params)
         self._cache: dict[str, tuple[float, dict]] = {}
         # message_id -> claim timestamp; dedupes the command/regex entry points
         self._inflight: dict[str, float] = {}
@@ -179,7 +180,7 @@ class PindoubaPlugin(Star):
             image = Image(file=recalled)
             notes.append("已使用本会话最近发送的一张图片。")
 
-        ok, notice = self._cooldown_gate(umo)
+        ok, notice = self._cooldown_gate(event)
         if not ok:
             if notice:
                 yield event.make_result().message(notice)
@@ -194,12 +195,14 @@ class PindoubaPlugin(Star):
         image: Image,
         notes: list[str],
     ) -> AsyncGenerator[MessageEventResult, None]:
-        """Run the scene-extraction -> pixel-render pipeline for one image.
+        """Run the download -> (optional) scene extraction -> render pipeline.
 
-        The VLM only supplies renderer parameters (style, subject crop box,
-        caption); the resemblance to the original image comes from the
-        algorithmic renderer. Every model failure degrades to pure rendering
-        instead of aborting.
+        The image is downloaded first so the scene cache can be keyed by
+        content hash (URLs change between forwards). The VLM is only called
+        when a feature consumes its output (caption or crop box) and the
+        cache misses; it merely supplies the subject crop box and caption,
+        while the resemblance comes from the algorithmic renderer. Every
+        model failure degrades to pure rendering instead of aborting.
 
         Args:
             event: The triggering message event.
@@ -216,28 +219,52 @@ class PindoubaPlugin(Star):
             )
             return
 
-        provider = self._resolve_provider(event)
-        scene: dict | None = None
-        degraded_reason = ""
-        if provider is not None:
-            scene = self._cache_get(image_ref)
-            if scene is None:
-                yield event.make_result().message(PROCESSING_TEXT)
-                try:
-                    scene = await self._extract_scene(provider, image_ref)
-                except Exception as e:
-                    logger.warning(
-                        f"[pindouba] scene extraction degraded to pure rendering: {e}"
-                    )
-                    degraded_reason = (
-                        "模型不可用" if self._is_config_error(e) else "模型识别失败"
-                    )
-                else:
-                    self._cache_put(image_ref, scene)
-
         try:
             image_path = await image.convert_to_file_path()
+            content_key = self._content_key(image_path)
+        except Exception as e:
+            logger.error(f"[pindouba] image download failed: {e}")
+            yield event.make_result().message(
+                "图片处理失败（下载失败或格式不支持），请换一张图片试试。"
+            )
+            return
+
+        # The VLM is only worth calling when a feature actually consumes its
+        # output (caption or crop box); otherwise render directly, no API cost.
+        want_scene = bool(self.config.get("enable_caption", True)) or bool(
+            self.config.get("auto_crop", False)
+        )
+        scene: dict | None = None
+        degraded_reason = ""
+        provider = None
+        if want_scene:
+            scene = self._cache_get(content_key)
+            if scene is None:
+                provider = self._resolve_provider(event)
+                if provider is not None:
+                    yield event.make_result().message(PROCESSING_TEXT)
+                    try:
+                        scene = await self._extract_scene(provider, image_ref)
+                    except Exception as e:
+                        logger.warning(
+                            "[pindouba] scene extraction degraded to pure "
+                            f"rendering: {e}"
+                        )
+                        degraded_reason = (
+                            "模型不可用" if self._is_config_error(e) else "模型识别失败"
+                        )
+                    else:
+                        self._cache_put(content_key, scene)
+
+        try:
             art = self._render(image_path, scene)
+        except ValueError as e:
+            logger.warning(f"[pindouba] rendering rejected: {e}")
+            yield event.make_result().message(
+                "这张图不适合直接拼豆（尺寸过小或长宽比太悬殊，比如超长截图），"
+                "裁剪一下或换一张试试。"
+            )
+            return
         except Exception as e:
             logger.error(f"[pindouba] rendering failed: {e}")
             yield event.make_result().message(
@@ -246,12 +273,14 @@ class PindoubaPlugin(Star):
             return
 
         caption_bits = list(notes)
-        if scene and scene.get("caption"):
-            caption_bits.append(f"识别：{scene['caption']}")
-        elif provider is None:
-            caption_bits.append("未配置多模态模型，按原图直接渲染")
-        elif degraded_reason:
-            caption_bits.append(f"{degraded_reason}，已按原图直接渲染")
+        if scene is not None:
+            if scene.get("caption"):
+                caption_bits.append(f"识别：{scene['caption']}")
+        elif want_scene:
+            if provider is None:
+                caption_bits.append("未配置多模态模型，按原图直接渲染")
+            elif degraded_reason:
+                caption_bits.append(f"{degraded_reason}，已按原图直接渲染")
 
         if self.config.get("send_mode", "image") == "text" and art.kind != "bead":
             text = art.text
@@ -269,7 +298,7 @@ class PindoubaPlugin(Star):
             yield event.make_result().message("\n".join(caption_bits))
 
     async def _extract_scene(self, provider: Provider, image_ref: str) -> dict:
-        """Ask the VLM for renderer parameters (style, crop box, caption).
+        """Ask the VLM for renderer parameters (subject crop box, caption).
 
         Args:
             provider: The chat provider (must support image input).
@@ -317,16 +346,19 @@ class PindoubaPlugin(Star):
         # explicit style choices.
         mode = "bead" if mode_cfg == "auto" else mode_cfg
         crop = self._scene_crop_fractions(scene)
+        palette = bool(self.config.get("bead_palette", False))
+        dither = bool(self.config.get("bead_dither", False))
         art = render_ascii_art(
             image_path,
             mode=mode,
             width=int(self.config.get("char_width", 80)),
             crop_box=crop,
-            bead_palette=bool(self.config.get("bead_palette", False)),
+            bead_palette=palette,
+            bead_dither=dither,
         )
         logger.info(
             f"[pindouba] rendered {art.width}x{art.height} mode={mode} "
-            f"cropped={crop is not None}"
+            f"cropped={crop is not None} palette={palette} dither={dither}"
         )
         return art
 
@@ -455,25 +487,29 @@ class PindoubaPlugin(Star):
             return self.context.get_provider_by_id(provider_id)
         return self.context.get_using_provider(event.unified_msg_origin)
 
-    def _cooldown_gate(self, umo: str) -> tuple[bool, str]:
-        """Apply the per-session cooldown and arm it when passing.
+    def _cooldown_gate(self, event: AstrMessageEvent) -> tuple[bool, str]:
+        """Apply the per-user cooldown and arm it when passing.
+
+        Keyed by session + sender so that in group chats one user's render
+        does not put the whole group on cooldown.
 
         Args:
-            umo: The unified message origin identifying the session.
+            event: The triggering message event.
 
         Returns:
             A (allowed, notice) tuple. When not allowed, `notice` is the
             cooldown message (or empty for silent mode).
         """
+        key = f"{event.unified_msg_origin}:{event.get_sender_id()}"
         cooldown = int(self.config.get("cooldown_seconds", 30))
         now = time.time()
-        elapsed = now - self._last_trigger.get(umo, 0.0)
+        elapsed = now - self._last_trigger.get(key, 0.0)
         if cooldown > 0 and elapsed < cooldown:
             remaining = int(cooldown - elapsed) + 1
             if self.config.get("cooldown_notice", True):
                 return False, f"拼豆冷却中，请 {remaining} 秒后再试。"
             return False, ""
-        self._last_trigger[umo] = now
+        self._last_trigger[key] = now
         return True, ""
 
     def _claim(self, event: AstrMessageEvent) -> bool:
@@ -530,32 +566,47 @@ class PindoubaPlugin(Star):
             return None
         return image_ref
 
-    def _cache_get(self, image_ref: str) -> dict | None:
+    @staticmethod
+    def _content_key(image_path: str) -> str:
+        """Hash the image file bytes into a stable cache key.
+
+        Chat platforms often re-serve the same picture under a fresh URL on
+        every forward; keying the scene cache by content makes those hits.
+
+        Args:
+            image_path: Local path of the downloaded image.
+
+        Returns:
+            The MD5 hex digest of the file bytes.
+        """
+        return hashlib.md5(Path(image_path).read_bytes()).hexdigest()
+
+    def _cache_get(self, image_hash: str) -> dict | None:
         """Look up a non-expired scene-params cache entry.
 
         Args:
-            image_ref: The image URL/file reference as cache key.
+            image_hash: The image content hash as cache key.
 
         Returns:
             The cached scene params, or None on miss/expiry/disabled cache.
         """
         if not self.config.get("enable_cache", True):
             return None
-        entry = self._cache.get(image_ref)
+        entry = self._cache.get(image_hash)
         if entry is None:
             return None
         ts, scene = entry
         ttl = int(self.config.get("cache_ttl_minutes", 360)) * 60
         if time.time() - ts > ttl:
-            del self._cache[image_ref]
+            del self._cache[image_hash]
             return None
         return scene
 
-    def _cache_put(self, image_ref: str, scene: dict) -> None:
+    def _cache_put(self, image_hash: str, scene: dict) -> None:
         """Store scene params in the bounded in-memory cache.
 
         Args:
-            image_ref: The image URL/file reference as cache key.
+            image_hash: The image content hash as cache key.
             scene: The VLM scene params to store.
         """
         if not self.config.get("enable_cache", True):
@@ -563,4 +614,4 @@ class PindoubaPlugin(Star):
         if len(self._cache) >= CACHE_MAX_ENTRIES:
             oldest = min(self._cache, key=lambda key: self._cache[key][0])
             del self._cache[oldest]
-        self._cache[image_ref] = (time.time(), scene)
+        self._cache[image_hash] = (time.time(), scene)

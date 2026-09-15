@@ -8,8 +8,6 @@ Run: python tests/test_plugin_logic.py
 """
 
 import asyncio
-import json
-import re
 import sys
 import tempfile
 import unittest
@@ -137,7 +135,10 @@ DEFAULT_CONFIG = {
     "call_timeout_seconds": 90,
     "render_mode": "auto",
     "char_width": 40,
+    "bead_palette": False,
+    "bead_dither": False,
     "auto_crop": True,
+    "enable_caption": True,
     "color": True,
     "send_mode": "image",
     "allow_at_trigger": False,
@@ -187,11 +188,32 @@ class FakeImage:
         return cls._png_path
 
 
+class FakeTallImage:
+    """Image component backed by a very tall PNG (aspect guard test)."""
+
+    _png_path = None
+
+    def __init__(self, url="http://x/tall.jpg"):
+        self.url = url
+        self.file = ""
+
+    @classmethod
+    async def convert_to_file_path(cls):
+        if cls._png_path is None:
+            from PIL import Image
+
+            img = Image.new("L", (40, 400), 128)
+            cls._png_path = str(Path(tempfile.mkdtemp()) / "tall.png")
+            img.convert("RGB").save(cls._png_path)
+        return cls._png_path
+
+
 class FakeEvent:
     unified_msg_origin = "p:g:s"
 
     def __init__(self):
         self.results = []
+        self.sender_id = "u1"
 
     def make_result(self):
         result = FakeResult()
@@ -200,6 +222,9 @@ class FakeEvent:
 
     def get_messages(self):
         return []
+
+    def get_sender_id(self):
+        return self.sender_id
 
     def get_platform_name(self):
         return "telegram"
@@ -213,8 +238,15 @@ class TriggerTests(unittest.TestCase):
         for text in ["/拼豆", "/拼豆 看这个", "/ 拼豆"]:
             self.assertRegex(text.strip(), main.TRIGGER_REGEX, msg=text)
         for text in [
-            "拼豆", "颜文字", "/颜文字", "/kaomoji", "/字符画",
-            "这个颜文字好可爱", "来拼豆吗", "ks拼豆", "/pindouba",
+            "拼豆",
+            "颜文字",
+            "/颜文字",
+            "/kaomoji",
+            "/字符画",
+            "这个颜文字好可爱",
+            "来拼豆吗",
+            "ks拼豆",
+            "/pindouba",
         ]:
             self.assertNotRegex(text.strip(), main.TRIGGER_REGEX, msg=text)
 
@@ -247,7 +279,9 @@ class HelperTests(unittest.TestCase):
         self.plugin = make_plugin(DEFAULT_CONFIG)
 
     def test_parse_llm_json_tolerates_fences_and_noise(self):
-        self.assertEqual(self.plugin._parse_llm_json('```json\n{"a": 1}\n```'), {"a": 1})
+        self.assertEqual(
+            self.plugin._parse_llm_json('```json\n{"a": 1}\n```'), {"a": 1}
+        )
         self.assertEqual(
             self.plugin._parse_llm_json('noise {"caption": "猫"} tail'),
             {"caption": "猫"},
@@ -255,18 +289,35 @@ class HelperTests(unittest.TestCase):
         self.assertIsNone(self.plugin._parse_llm_json("no json here"))
 
     def test_cooldown_gate(self):
-        ok, notice = self.plugin._cooldown_gate("umo")
+        ok, notice = self.plugin._cooldown_gate(FakeEvent())
         self.assertTrue(ok)
-        ok2, notice2 = self.plugin._cooldown_gate("umo")
+        ok2, notice2 = self.plugin._cooldown_gate(FakeEvent())
         self.assertFalse(ok2)
         self.assertIn("秒", notice2)
 
     def test_cooldown_silent_mode(self):
         self.plugin.config["cooldown_notice"] = False
-        self.plugin._cooldown_gate("umo2")
-        ok, notice = self.plugin._cooldown_gate("umo2")
+        self.plugin._cooldown_gate(FakeEvent())
+        ok, notice = self.plugin._cooldown_gate(FakeEvent())
         self.assertFalse(ok)
         self.assertEqual(notice, "")
+
+    def test_cooldown_independent_per_sender(self):
+        e1, e2 = FakeEvent(), FakeEvent()
+        e2.sender_id = "u2"
+        self.assertTrue(self.plugin._cooldown_gate(e1)[0])
+        self.assertTrue(self.plugin._cooldown_gate(e2)[0])  # other user passes
+        self.assertFalse(self.plugin._cooldown_gate(e1)[0])  # same user blocked
+
+    def test_content_key_stable_and_distinct(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p1 = Path(tmp) / "a.png"
+            p2 = Path(tmp) / "b.png"
+            p1.write_bytes(b"same")
+            p2.write_bytes(b"other")
+            key = main.PindoubaPlugin._content_key
+            self.assertEqual(key(str(p1)), key(str(p1)))
+            self.assertNotEqual(key(str(p1)), key(str(p2)))
 
     def test_cache_roundtrip(self):
         self.plugin._cache_put("ref", {"caption": "猫"})
@@ -425,6 +476,71 @@ class PipelineTests(unittest.TestCase):
         flows = asyncio.run(run())
         self.assertIsNone(flows[0].image_path)
         self.assertIn("\n", flows[0].text)  # multi-line art text
+
+    def test_generate_flow_skips_vlm_when_features_off(self):
+        self.plugin.config["enable_caption"] = False
+        self.plugin.config["auto_crop"] = False
+        calls = {"n": 0}
+
+        class CountingProvider:
+            async def text_chat(self, **kw):
+                calls["n"] += 1
+                return FakeResp("{}")
+
+        self._wire_provider(CountingProvider())
+
+        async def run():
+            event = FakeEvent()
+            return [
+                r
+                async for r in self.plugin._generate_flow(
+                    event, FakeImage("http://x/a.jpg"), []
+                )
+            ]
+
+        flows = asyncio.run(run())
+        self.assertEqual(calls["n"], 0)  # model never called
+        self.assertEqual(len(flows), 1)  # image only: no ack, no caption
+        self.assertTrue(flows[0].image_path)
+
+    def test_scene_cache_hits_across_url_change(self):
+        scene_calls = {"n": 0}
+
+        class SceneProvider:
+            async def text_chat(self, **kw):
+                scene_calls["n"] += 1
+                return FakeResp('{"subject_box": null, "caption": "测试猫"}')
+
+        self._wire_provider(SceneProvider())
+
+        async def run(ref):
+            event = FakeEvent()
+            return [
+                r async for r in self.plugin._generate_flow(event, FakeImage(ref), [])
+            ]
+
+        flows = asyncio.run(run("http://x/a.jpg"))
+        self.assertEqual(len(flows), 3)
+        # Same picture bytes under a fresh URL: cache hit, no second call.
+        flows = asyncio.run(run("http://x/b.jpg"))
+        self.assertEqual(scene_calls["n"], 1)
+        self.assertEqual(len(flows), 2)
+        self.assertIn("识别：测试猫", flows[1].text)
+
+    def test_generate_flow_rejects_elongated_image(self):
+        self.plugin.context = type("Ctx", (), {})()
+        self.plugin.context.get_using_provider = lambda umo=None: None
+        self.plugin.context.get_provider_by_id = lambda pid=None: None
+
+        async def run():
+            event = FakeEvent()
+            return [
+                r async for r in self.plugin._generate_flow(event, FakeTallImage(), [])
+            ]
+
+        flows = asyncio.run(run())
+        self.assertEqual(len(flows), 1)
+        self.assertIn("裁剪", flows[0].text)
 
     def test_generate_flow_no_image_ref(self):
         self.plugin.context = type("Ctx", (), {})()

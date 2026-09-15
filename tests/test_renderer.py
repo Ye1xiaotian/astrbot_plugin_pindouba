@@ -12,11 +12,12 @@ try:
 except ImportError:  # Pillow missing; renderer cannot be tested.
     raise SystemExit("Pillow is required: pip install pillow")
 
-from renderer import (
+from renderer import (  # noqa: E402  (imports follow the Pillow availability check)
     BEAD_PAD,
-    BEAD_PITCH,
     BEAD_PALETTE,
+    BEAD_PITCH,
     AsciiArt,
+    _nearest_bead_color,
     paint_ascii_art_png,
     render_ascii_art,
 )
@@ -27,6 +28,15 @@ def make_test_image(path: Path, left: int = 0, right: int = 255, size=(100, 50))
     img = Image.new("L", size, right)
     img.paste(Image.new("L", (size[0] // 2, size[1]), left), (0, 0))
     img.convert("RGB").save(path)
+    return path
+
+
+def make_gradient_image(path: Path, size=(256, 64)):
+    """Left-to-right black-to-white smooth gradient (dithering tests)."""
+    row = Image.new("L", (size[0], 1))
+    for x in range(size[0]):
+        row.putpixel((x, 0), round(x / (size[0] - 1) * 255))
+    row.resize(size, Image.NEAREST).convert("RGB").save(path)
     return path
 
 
@@ -161,13 +171,53 @@ class BeadTests(unittest.TestCase):
         self.assertEqual((r, g, b), (255, 255, 255))
 
     def test_bead_colors_quantized_to_palette(self):
+        art = render_ascii_art(self.image, mode="bead", width=40, bead_palette=True)
+        palette = set(BEAD_PALETTE)
+        for row in art.rows:
+            for _, color in row:
+                self.assertIn(color, palette)
+
+    def test_bead_dither_stays_in_palette(self):
         art = render_ascii_art(
-            self.image, mode="bead", width=40, bead_palette=True
+            make_gradient_image(self.tmp / "grad.png"),
+            mode="bead",
+            width=40,
+            bead_palette=True,
+            bead_dither=True,
         )
         palette = set(BEAD_PALETTE)
         for row in art.rows:
             for _, color in row:
                 self.assertIn(color, palette)
+
+    def test_bead_dither_smooths_gradient(self):
+        # A smooth gradient bands into few flat colors without dithering;
+        # error diffusion blends neighboring palette colors instead, so the
+        # dithered grid uses noticeably more distinct palette entries.
+        image = make_gradient_image(self.tmp / "grad.png")
+
+        def distinct_colors(**kw):
+            art = render_ascii_art(image, mode="bead", width=40, **kw)
+            return len({color for row in art.rows for _, color in row})
+
+        plain = distinct_colors(bead_palette=True)
+        dithered = distinct_colors(bead_palette=True, bead_dither=True)
+        self.assertGreater(dithered, plain)
+
+    def test_bead_dither_without_palette_is_noop(self):
+        # Dithering only diffuses quantization error; without the palette
+        # quantizer there is no error, so the flag must change nothing.
+        image = make_gradient_image(self.tmp / "grad.png")
+        plain = render_ascii_art(image, mode="bead", width=40)
+        dithered = render_ascii_art(image, mode="bead", width=40, bead_dither=True)
+        self.assertEqual(plain.rows, dithered.rows)
+
+    def test_nearest_bead_color_weights_green(self):
+        # (0, 0, 72) is euclidean-closest to navy (20, 36, 86), but the
+        # green-weighted metric keeps green tight and picks midnight
+        # (30, 30, 60) instead; exact palette hits must map to themselves.
+        self.assertEqual(_nearest_bead_color((0, 0, 72)), (30, 30, 60))
+        self.assertEqual(_nearest_bead_color((0, 129, 54)), (0, 129, 54))
 
     def test_bead_paint_produces_png(self):
         art = render_ascii_art(self.image, mode="bead", width=40)
@@ -221,6 +271,39 @@ class PaintTests(unittest.TestCase):
         self.assertGreater(out.stat().st_size, 0)
         with Image.open(out) as rendered:
             self.assertEqual(rendered.format, "PNG")
+
+
+class AspectGuardTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def _save(self, size):
+        img = Image.new("L", size, 128)
+        path = self.tmp / f"img_{size[0]}x{size[1]}.png"
+        img.convert("RGB").save(path)
+        return path
+
+    def test_extreme_portrait_rejected(self):
+        with self.assertRaises(ValueError):
+            render_ascii_art(self._save((40, 400)), mode="bead", width=40)
+
+    def test_extreme_landscape_rejected(self):
+        with self.assertRaises(ValueError):
+            render_ascii_art(self._save((400, 40)), mode="bead", width=40)
+
+    def test_crop_box_rescues_tall_image(self):
+        # The guard applies after cropping: a tall screenshot whose subject
+        # box cuts it back to a sane aspect still renders.
+        art = render_ascii_art(
+            self._save((40, 400)), mode="bead", width=40, crop_box=(0.0, 0.0, 1.0, 0.2)
+        )
+        self.assertGreater(art.width, 0)
+
+    def test_borderline_aspect_passes(self):
+        art = render_ascii_art(self._save((60, 360)), mode="bead", width=40)
+        self.assertEqual(art.kind, "bead")
 
 
 class AsciiArtTests(unittest.TestCase):

@@ -111,6 +111,9 @@ MONO_FONTS = (
 )
 BEAD_PITCH = 12  # square cell size in px
 BEAD_PAD = 6  # canvas margin in px
+MAX_ASPECT_RATIO = 6.0
+"""Reject images more elongated than this (checked after cropping): the
+max-rows clamp would squeeze them into an unrecognizably narrow strip."""
 
 
 @dataclass
@@ -145,6 +148,7 @@ def render_ascii_art(
     edge_percent: float = 8.0,
     max_rows: int = 110,
     bead_palette: bool = False,
+    bead_dither: bool = False,
 ) -> AsciiArt:
     """Render an image file into a character grid.
 
@@ -163,6 +167,9 @@ def render_ascii_art(
             so the requested width is not silently reduced.
         bead_palette: Bead mode only - quantize bead colors to the classic
             bead palette (handmade look, but colors deviate from the source).
+        bead_dither: Bead mode only - diffuse the palette quantization error
+            to neighboring cells (Floyd-Steinberg). Smooths gradients that
+            would band; only meaningful together with bead_palette.
 
     Returns:
         The rendered AsciiArt grid.
@@ -187,10 +194,16 @@ def render_ascii_art(
     w, h = img.size
     if w < 2 or h < 2:
         raise ValueError("image too small to render")
+    if h > w * MAX_ASPECT_RATIO or w > h * MAX_ASPECT_RATIO:
+        raise ValueError(f"image aspect ratio too extreme ({w}x{h}); crop it and retry")
 
     if mode == "bead":
         return _render_bead(
-            img, cols=max(8, width), max_rows=max_rows, palette=bead_palette
+            img,
+            cols=max(8, width),
+            max_rows=max_rows,
+            palette=bead_palette,
+            dither=bead_dither,
         )
     if mode == "braille":
         return _render_braille(img, cols=max(8, width), max_rows=max_rows)
@@ -292,13 +305,18 @@ def paint_ascii_art_png(
 
 
 def _render_bead(
-    img: Image.Image, cols: int, max_rows: int, palette: bool = False
+    img: Image.Image,
+    cols: int,
+    max_rows: int,
+    palette: bool = False,
+    dither: bool = False,
 ) -> AsciiArt:
     """Render as a square-pixel mosaic: every grid cell is one colored square.
 
     Full coverage - background included - so the whole image stays visible.
     Cells sit on a square grid; each cell's color is the average of its
-    source pixels, optionally quantized to the bead palette.
+    source pixels, optionally quantized to the bead palette with
+    Floyd-Steinberg error diffusion.
 
     Args:
         img: Source image (RGB).
@@ -306,6 +324,9 @@ def _render_bead(
         max_rows: Upper bound of cell rows; the mosaic shrinks (aspect kept)
             when it would exceed this.
         palette: Quantize cell colors to the classic bead palette.
+        dither: Palette only - push each cell's quantization error onto its
+            yet-unvisited neighbors, so flat gradients blend between palette
+            colors instead of banding.
 
     Returns:
         The bead AsciiArt grid (kind "bead"; chars are placeholders, the
@@ -319,15 +340,33 @@ def _render_bead(
     small = img.resize((cols, rows), Image.LANCZOS)
     raw = small.tobytes()
 
+    # Float RGB working copy: dithering errors accumulate past 0-255 before
+    # the next cell's nearest-palette lookup.
+    cells = [[raw[3 * i], raw[3 * i + 1], raw[3 * i + 2]] for i in range(cols * rows)]
+
     rows_out: list[list[tuple[str, tuple[int, int, int]]]] = []
     for r in range(rows):
         row: list[tuple[str, tuple[int, int, int]]] = []
         for c in range(cols):
             i = r * cols + c
-            color = (raw[3 * i], raw[3 * i + 1], raw[3 * i + 2])
-            if palette:
-                color = _nearest_bead_color(color)
+            color = _nearest_bead_color(cells[i]) if palette else tuple(cells[i])
             row.append(("■", color))
+            if not (palette and dither):
+                continue
+            err = [cells[i][k] - color[k] for k in range(3)]
+            fanout = []
+            if c + 1 < cols:
+                fanout.append((i + 1, 7))
+            if r + 1 < rows:
+                base = i + cols
+                if c > 0:
+                    fanout.append((base - 1, 3))
+                fanout.append((base, 5))
+                if c + 1 < cols:
+                    fanout.append((base + 1, 1))
+            for j, weight in fanout:
+                for k in range(3):
+                    cells[j][k] += err[k] * weight / 16
         rows_out.append(row)
     return AsciiArt(rows=rows_out, kind="bead")
 
@@ -481,19 +520,25 @@ def _render_line(
 # --------------------------------------------------------------------- #
 
 
-def _nearest_bead_color(color: tuple[int, int, int]) -> tuple[int, int, int]:
+def _nearest_bead_color(
+    color: tuple[int, int, int] | list[float],
+) -> tuple[int, int, int]:
     """Quantize a color to the closest entry of the bead palette.
 
+    Distance is green-weighted, (2dr)^2 + (4dg)^2 + (3db)^2: human vision
+    resolves greens better than reds and blues, so holding the green channel
+    tight picks more faithful skies and skin tones.
+
     Args:
-        color: An RGB color.
+        color: An RGB color (ints, or float cells while dithering).
 
     Returns:
-        The palette color with the smallest euclidean distance.
+        The palette color with the smallest weighted distance.
     """
     r, g, b = color
     return min(
         BEAD_PALETTE,
-        key=lambda p: (p[0] - r) ** 2 + (p[1] - g) ** 2 + (p[2] - b) ** 2,
+        key=lambda p: 4 * (p[0] - r) ** 2 + 16 * (p[1] - g) ** 2 + 9 * (p[2] - b) ** 2,
     )
 
 
