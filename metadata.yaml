@@ -19,6 +19,6 @@ help: |
 
   可选配置一个支持图片输入的模型，
   用于识别图片内容；模型不可用时按原图直接渲染。
-version: v0.4.2.1
+version: 0.4.3
 author: Ye1xiaotian
 repo: https://github.com/Ye1xiaotian/astrbot_plugin_pindouba
