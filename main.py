@@ -30,6 +30,7 @@ CLAIM_TTL_SECONDS = 120
 USAGE_TEXT = (
     "用法：发送 /拼豆 并附带一张图片，我会把图片拼成一幅彩色拼豆画。\n"
     "也可以：引用一张图片回复 /拼豆，或先发送图片、再在 10 分钟内发送 /拼豆。\n"
+    "拼头像：发送 /拼我 拼自己的头像，或 /拼 @某人 拼对方的头像（仅支持 QQ）。\n"
     "（当前消息未检测到图片）"
 )
 PROCESSING_TEXT = "正在埋头拼豆，请稍候…"
@@ -37,6 +38,16 @@ TRIGGER_REGEX = r"^\s*/\s*拼豆(?:\s|$)"
 """The one wake word: /拼豆 (slash required; not affected by wake_prefix)."""
 """Fallback trigger pattern; matches the command with or without a slash
 prefix regardless of the host's wake_prefix configuration."""
+AVATAR_SELF_REGEX = r"^\s*/\s*拼我(?:\s|$)"
+"""`/拼我`: bead the sender's own avatar."""
+AVATAR_AT_REGEX = r"^\s*/\s*拼(?=@|\s|$)"
+"""`/拼 @某人`: bead the @'d user's avatar. The char right after 拼 must be
+an @, whitespace, or end, so `/拼豆` and `/拼我` never collide."""
+AVATAR_USAGE_TEXT = "用法：/拼我 拼你自己的头像；/拼 @某人 拼对方的头像（仅支持 QQ）。"
+AVATAR_PLATFORM_TEXT = "拼头像目前只支持 QQ，其他平台先用 /拼豆 发图吧。"
+AVATAR_QLOGO_URL = "https://q1.qlogo.cn/g?b=qq&nk={qq}&s=640"
+"""QQ avatar CDN: a user's avatar is addressable by QQ number alone, no API
+call needed (640x640, GIF avatars included)."""
 
 # Substrings of provider errors that indicate a model/config problem rather
 # than a transient failure; they make the degrade caption more specific.
@@ -114,6 +125,28 @@ class PindoubaPlugin(Star):
         async for result in self._handle_trigger(event):
             yield result
 
+    @filter.regex(AVATAR_SELF_REGEX)
+    async def avatar_self_trigger(self, event: AstrMessageEvent):
+        """`/拼我`: bead the sender's own avatar."""
+        if not self._claim(event):
+            return
+        async for result in self._handle_avatar(event, None, "已使用你的头像。"):
+            yield result
+
+    @filter.regex(AVATAR_AT_REGEX)
+    async def avatar_at_trigger(self, event: AstrMessageEvent):
+        """`/拼 @某人`: bead the @'d user's avatar."""
+        if not self._claim(event):
+            return
+        ats = [c for c in event.get_messages() if isinstance(c, At)]
+        if not ats or str(ats[0].qq) == "all":
+            yield event.make_result().message(AVATAR_USAGE_TEXT)
+            return
+        name = str(ats[0].name or "").strip()
+        note = f"已使用 @{name} 的头像。" if name else "已使用对方的头像。"
+        async for result in self._handle_avatar(event, str(ats[0].qq), note):
+            yield result
+
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
         """Record the latest image per session; optional "@bot + image" trigger."""
@@ -189,11 +222,48 @@ class PindoubaPlugin(Star):
         async for result in self._generate_flow(event, image, notes):
             yield result
 
+    async def _handle_avatar(
+        self,
+        event: AstrMessageEvent,
+        target_qq: str | None,
+        note: str,
+    ) -> AsyncGenerator[MessageEventResult, None]:
+        """Bead a QQ avatar: build the qlogo URL, then reuse the pipeline.
+
+        Avatars are only addressable on QQ (aiocqhttp); other platforms get
+        a polite refusal. The pipeline runs in avatar mode: no VLM call, so
+        the bead art comes back as fast as the download.
+
+        Args:
+            event: The triggering message event.
+            target_qq: The @'d user's QQ number, or None for the sender.
+            note: User-facing note identifying whose avatar this is.
+
+        Yields:
+            Message results: usage help, cooldown notice, or the rendered
+            avatar bead art.
+        """
+        if event.get_platform_name() != "aiocqhttp":
+            yield event.make_result().message(AVATAR_PLATFORM_TEXT)
+            return
+
+        ok, notice = self._cooldown_gate(event)
+        if not ok:
+            if notice:
+                yield event.make_result().message(notice)
+            return
+
+        qq = target_qq or str(event.get_sender_id())
+        image = Image.fromURL(AVATAR_QLOGO_URL.format(qq=qq))
+        async for result in self._generate_flow(event, image, [note], avatar=True):
+            yield result
+
     async def _generate_flow(
         self,
         event: AstrMessageEvent,
         image: Image,
         notes: list[str],
+        avatar: bool = False,
     ) -> AsyncGenerator[MessageEventResult, None]:
         """Run the download -> (optional) scene extraction -> render pipeline.
 
@@ -203,11 +273,14 @@ class PindoubaPlugin(Star):
         cache misses; it merely supplies the subject crop box and caption,
         while the resemblance comes from the algorithmic renderer. Every
         model failure degrades to pure rendering instead of aborting.
+        Avatar mode forces the pure path: an avatar fills the frame, so
+        cropping is pointless and captions would say nothing useful.
 
         Args:
             event: The triggering message event.
             image: The image component to process.
             notes: User-facing notes to include in the caption.
+            avatar: Avatar mode - always skip the VLM (fast, no API cost).
 
         Yields:
             Message results: the processing ack, then the rendered art.
@@ -231,8 +304,9 @@ class PindoubaPlugin(Star):
 
         # The VLM is only worth calling when a feature actually consumes its
         # output (caption or crop box); otherwise render directly, no API cost.
-        want_scene = bool(self.config.get("enable_caption", True)) or bool(
-            self.config.get("auto_crop", False)
+        want_scene = not avatar and (
+            bool(self.config.get("enable_caption", True))
+            or bool(self.config.get("auto_crop", False))
         )
         scene: dict | None = None
         degraded_reason = ""

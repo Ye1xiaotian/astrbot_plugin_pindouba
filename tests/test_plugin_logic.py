@@ -8,6 +8,7 @@ Run: python tests/test_plugin_logic.py
 """
 
 import asyncio
+import itertools
 import sys
 import tempfile
 import unittest
@@ -66,9 +67,15 @@ except ImportError:
         pass
 
     class Image:
-        def __init__(self, file="", url="", **_):
+        # Mirrors the real component signature: `file` is a required
+        # positional argument, so url-only constructions fail in tests too.
+        def __init__(self, file, url="", **_):
             self.url = url
             self.file = file
+
+        @staticmethod
+        def fromURL(url):
+            return Image(file=url)
 
     class Reply:
         def __init__(self, chain=None):
@@ -210,10 +217,16 @@ class FakeTallImage:
 
 class FakeEvent:
     unified_msg_origin = "p:g:s"
+    _id_seq = itertools.count()
 
     def __init__(self):
         self.results = []
         self.sender_id = "u1"
+        self.platform_name = "aiocqhttp"
+        self.chain = []
+        self.message_obj = type(
+            "M", (), {"message_id": f"m{next(FakeEvent._id_seq)}"}
+        )()
 
     def make_result(self):
         result = FakeResult()
@@ -221,13 +234,13 @@ class FakeEvent:
         return result
 
     def get_messages(self):
-        return []
+        return self.chain
 
     def get_sender_id(self):
         return self.sender_id
 
     def get_platform_name(self):
-        return "telegram"
+        return self.platform_name
 
 
 class TriggerTests(unittest.TestCase):
@@ -250,6 +263,20 @@ class TriggerTests(unittest.TestCase):
         ]:
             self.assertNotRegex(text.strip(), main.TRIGGER_REGEX, msg=text)
 
+    def test_avatar_regexes_are_exclusive(self):
+        # Self avatar only matches /拼我; @ avatar matches /拼 followed by
+        # @/space/end; neither ever matches /拼豆 or each other.
+        for text in ["/拼我", "/拼我 谢谢"]:
+            self.assertRegex(text, main.AVATAR_SELF_REGEX, msg=text)
+            self.assertNotRegex(text, main.AVATAR_AT_REGEX, msg=text)
+            self.assertNotRegex(text, main.TRIGGER_REGEX, msg=text)
+        for text in ["/拼 @小明", "/拼@小明", "/拼 "]:
+            self.assertRegex(text, main.AVATAR_AT_REGEX, msg=text)
+            self.assertNotRegex(text, main.AVATAR_SELF_REGEX, msg=text)
+        for text in ["/拼豆", "/拼豆 @小明", "拼我", "/拼头像"]:
+            self.assertNotRegex(text, main.AVATAR_AT_REGEX, msg=text)
+            self.assertNotRegex(text, main.AVATAR_SELF_REGEX, msg=text)
+
     def test_claim_dedupes_message(self):
         event = type("E", (), {})()
         event.message_obj = type("M", (), {"message_id": "m1"})()
@@ -266,7 +293,7 @@ class TriggerTests(unittest.TestCase):
         self.assertIsNone(self.plugin._recall_image("umo"))
 
     def test_extract_images_direct_and_reply(self):
-        direct = main.Image(url="http://a/1.jpg")
+        direct = main.Image(file="", url="http://a/1.jpg")
         quoted = main.Image(file="base64://x")
         self.assertEqual(main._extract_images([direct]), [direct])
         reply = main.Reply(chain=[quoted])
@@ -555,6 +582,116 @@ class PipelineTests(unittest.TestCase):
 
         flows = asyncio.run(run())
         self.assertIn("图片数据异常", flows[0].text)
+
+
+class AvatarStubImage(main.Image):
+    """Image stub that records the constructed URL and serves real pixels."""
+
+    last_url = ""
+    _png_path = None
+
+    def __init__(self, file, url="", **_):
+        super().__init__(file=file, url=url)
+        AvatarStubImage.last_url = url or file
+
+    @classmethod
+    def fromURL(cls, url):
+        return cls(file=url)
+
+    @classmethod
+    async def convert_to_file_path(cls):
+        if cls._png_path is None:
+            from PIL import Image
+
+            img = Image.new("L", (64, 64), 128)
+            cls._png_path = str(Path(tempfile.mkdtemp()) / "avatar.png")
+            img.convert("RGB").save(cls._png_path)
+        return cls._png_path
+
+
+class AvatarTests(unittest.TestCase):
+    def setUp(self):
+        self.plugin = make_plugin(DEFAULT_CONFIG)
+        self._orig_image = main.Image
+        main.Image = AvatarStubImage
+        self.addCleanup(setattr, main, "Image", self._orig_image)
+        AvatarStubImage.last_url = ""
+
+    def _drain(self, agen):
+        async def collect():
+            return [r async for r in agen]
+
+        return asyncio.run(collect())
+
+    def test_avatar_refuses_non_qq_platform(self):
+        event = FakeEvent()
+        event.platform_name = "telegram"
+        flows = self._drain(self.plugin._handle_avatar(event, None, "已使用你的头像。"))
+        self.assertIn("只支持 QQ", flows[0].text)
+
+    def test_avatar_self_uses_sender_qq(self):
+        flows = self._drain(
+            self.plugin._handle_avatar(FakeEvent(), None, "已使用你的头像。")
+        )
+        self.assertIn("nk=u1", AvatarStubImage.last_url)
+        self.assertTrue(flows[0].image_path)
+        self.assertIn("已使用你的头像", flows[1].text)
+
+    def test_avatar_at_trigger_uses_at_target(self):
+        at = main.At()
+        at.qq = "12345"
+        at.name = "小明"
+        event = FakeEvent()
+        event.chain = [at]
+        flows = self._drain(self.plugin.avatar_at_trigger(event))
+        self.assertIn("nk=12345", AvatarStubImage.last_url)
+        self.assertIn("@小明", flows[1].text)
+
+    def test_avatar_at_trigger_unnamed_target(self):
+        at = main.At()
+        at.qq = 67890  # adapters may hand over an int
+        at.name = None
+        event = FakeEvent()
+        event.chain = [at]
+        flows = self._drain(self.plugin.avatar_at_trigger(event))
+        self.assertIn("nk=67890", AvatarStubImage.last_url)
+        self.assertIn("已使用对方的头像", flows[1].text)
+
+    def test_avatar_at_trigger_needs_a_target(self):
+        flows = self._drain(self.plugin.avatar_at_trigger(FakeEvent()))
+        self.assertIn("用法", flows[0].text)
+        at = main.At()
+        at.qq = "all"  # @全体成员 has no avatar to bead
+        at.name = "@全体成员"
+        event = FakeEvent()
+        event.chain = [at]
+        flows = self._drain(self.plugin.avatar_at_trigger(event))
+        self.assertIn("用法", flows[0].text)
+
+    def test_avatar_skips_vlm_even_when_enabled(self):
+        calls = {"n": 0}
+
+        class CountingProvider:
+            async def text_chat(self, **kw):
+                calls["n"] += 1
+                return FakeResp("{}")
+
+        self.plugin.context = type("Ctx", (), {})()
+        self.plugin.context.get_using_provider = lambda umo=None: CountingProvider()
+        self.plugin.context.get_provider_by_id = lambda pid=None: None
+        # DEFAULT_CONFIG has enable_caption=True; avatar mode must override it.
+        flows = self._drain(
+            self.plugin._handle_avatar(FakeEvent(), None, "已使用你的头像。")
+        )
+        self.assertEqual(calls["n"], 0)
+        self.assertTrue(flows[0].image_path)
+
+    def test_avatar_is_cooldown_gated(self):
+        self._drain(self.plugin._handle_avatar(FakeEvent(), None, "已使用你的头像。"))
+        flows = self._drain(
+            self.plugin._handle_avatar(FakeEvent(), None, "已使用你的头像。")
+        )
+        self.assertIn("冷却", flows[0].text)
 
 
 class FakeResp:

@@ -1,7 +1,7 @@
 name: astrbot_plugin_pindouba
 display_name: 拼豆吧
-desc: 把一张图片变成像素拼豆画。可选接入多模态模型，识别图片内容、裁掉背景只拼主体；不配模型也能出图。
-short_desc: 把图片变成像素拼豆画，可选接多模态模型做识别和裁剪。
+desc: 可以将喜欢的图片拼成豆，还可以拼群友玩
+short_desc: 把图片或 QQ 头像变成像素拼豆画，可选接多模态模型做识别和裁剪。
 help: |
   把一张图片变成像素拼豆画：彩色方格铺满整张图，背景也保留，
   每个方格的颜色取自原图。
@@ -10,6 +10,10 @@ help: |
     /拼豆 + 图片            命令和图片放在同一条消息里
     引用图片 + 回复 /拼豆
     先发图片，10 分钟内补发 /拼豆
+
+  拼头像（仅支持 QQ，不用发图、不调用模型，秒回）：
+    /拼我                   拼你自己的头像
+    /拼 + @某人             拼对方的头像
 
   说明：
     - 一次发了多张图，只处理第一张
@@ -22,7 +26,7 @@ help: |
   可选配置一个支持图片输入的模型，用来识别内容和裁剪主体。
   把 enable_caption 和 auto_crop 都关掉就完全不调用模型，出图最快。
   模型不可用时按原图直接渲染。
-version: 0.6.0
+version: 0.6.1
 author: Ye1xiaotian
 repo: https://github.com/Ye1xiaotian/astrbot_plugin_pindouba
 astrbot_version: ">=4.0,<5"
