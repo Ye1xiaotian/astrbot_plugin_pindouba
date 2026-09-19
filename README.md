@@ -50,12 +50,14 @@ AstrBot 插件。把一张图片变成像拼豆一样
 
 | 拼豆（默认） | 盲文小点（`braille`） |
 |---|---|
-| <img src="assets/compare_bead.png" width="340"> | <img src="assets/compare_braille.png" width="340"> |
+<!-- Images use absolute raw.githubusercontent URLs: the dashboard renders this
+     README at its own origin, where relative asset paths 404. -->
+| <img src="https://raw.githubusercontent.com/Ye1xiaotian/astrbot_plugin_pindouba/main/assets/compare_bead.png" width="340"> | <img src="https://raw.githubusercontent.com/Ye1xiaotian/astrbot_plugin_pindouba/main/assets/compare_braille.png" width="340"> |
 | 彩色方格铺满整图 | 黑白小点最密|
 
 | 灰阶（`shading`） | 描线（`line`） |
 |---|---|
-| <img src="assets/compare_shading.png" width="340"> | <img src="assets/compare_line.png" width="340"> |
+| <img src="https://raw.githubusercontent.com/Ye1xiaotian/astrbot_plugin_pindouba/main/assets/compare_shading.png" width="340"> | <img src="https://raw.githubusercontent.com/Ye1xiaotian/astrbot_plugin_pindouba/main/assets/compare_line.png" width="340"> |
 | 黑白深浅过渡| 只勾轮廓，适合线稿 |
 
 喜欢哪种就改 `render_mode`。（除bead模式外，其他模式均为迭代产物，不推荐使用）
