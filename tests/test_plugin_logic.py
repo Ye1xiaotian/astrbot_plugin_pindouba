@@ -17,6 +17,9 @@ from pathlib import Path
 PLUGIN_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(PLUGIN_DIR))
 
+# Filled by the stub filter below; stays empty when the real astrbot is used.
+REGISTERED_COMMANDS: list[str] = []
+
 try:
     import main  # noqa: F401  (real astrbot available)
 except ImportError:
@@ -48,10 +51,8 @@ except ImportError:
     class _Filter:
         EventMessageType = type("EventMessageType", (), {"ALL": "ALL"})
 
-        def command(self, *a, **k):
-            return lambda f: f
-
-        def regex(self, *a, **k):
+        def command(self, name, *a, **k):
+            REGISTERED_COMMANDS.append(name)
             return lambda f: f
 
         def event_message_type(self, *a, **k):
@@ -247,35 +248,13 @@ class TriggerTests(unittest.TestCase):
     def setUp(self):
         self.plugin = make_plugin(DEFAULT_CONFIG)
 
-    def test_trigger_regex_matches_command_forms(self):
-        for text in ["/拼豆", "/拼豆 看这个", "/ 拼豆"]:
-            self.assertRegex(text.strip(), main.TRIGGER_REGEX, msg=text)
-        for text in [
-            "拼豆",
-            "颜文字",
-            "/颜文字",
-            "/kaomoji",
-            "/字符画",
-            "这个颜文字好可爱",
-            "来拼豆吗",
-            "ks拼豆",
-            "/pindouba",
-        ]:
-            self.assertNotRegex(text.strip(), main.TRIGGER_REGEX, msg=text)
-
-    def test_avatar_regexes_are_exclusive(self):
-        # Self avatar only matches /拼我; @ avatar matches /拼 followed by
-        # @/space/end; neither ever matches /拼豆 or each other.
-        for text in ["/拼我", "/拼我 谢谢"]:
-            self.assertRegex(text, main.AVATAR_SELF_REGEX, msg=text)
-            self.assertNotRegex(text, main.AVATAR_AT_REGEX, msg=text)
-            self.assertNotRegex(text, main.TRIGGER_REGEX, msg=text)
-        for text in ["/拼 @小明", "/拼@小明", "/拼 "]:
-            self.assertRegex(text, main.AVATAR_AT_REGEX, msg=text)
-            self.assertNotRegex(text, main.AVATAR_SELF_REGEX, msg=text)
-        for text in ["/拼豆", "/拼豆 @小明", "拼我", "/拼头像"]:
-            self.assertNotRegex(text, main.AVATAR_AT_REGEX, msg=text)
-            self.assertNotRegex(text, main.AVATAR_SELF_REGEX, msg=text)
+    def test_commands_registered_and_distinct(self):
+        # The dashboard lists filter.command names and the host CommandFilter
+        # derives mutual exclusion from them, so 拼豆/拼我/拼 must register
+        # exactly once each.
+        if not REGISTERED_COMMANDS:
+            self.skipTest("filter stub not in use (real astrbot)")
+        self.assertEqual(sorted(REGISTERED_COMMANDS), ["拼", "拼我", "拼豆"])
 
     def test_claim_dedupes_message(self):
         event = type("E", (), {})()
