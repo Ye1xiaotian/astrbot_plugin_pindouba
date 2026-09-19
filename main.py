@@ -34,9 +34,15 @@ USAGE_TEXT = (
     "（当前消息未检测到图片）"
 )
 PROCESSING_TEXT = "正在埋头拼豆，请稍候…"
-# Wake words are registered via filter.command so the dashboard lists clean
-# command names; the host CommandFilter keeps 拼豆/拼我/拼 mutually exclusive
-# (a command only matches its exact token followed by a space or end).
+TRIGGER_REGEX = r"^\s*/\s*拼豆(?:\s|$)"
+"""The one wake word: /拼豆 (slash required; not affected by wake_prefix)."""
+"""Fallback trigger pattern; matches the command with or without a slash
+prefix regardless of the host's wake_prefix configuration."""
+AVATAR_SELF_REGEX = r"^\s*/\s*拼我(?:\s|$)"
+"""`/拼我`: bead the sender's own avatar."""
+AVATAR_AT_REGEX = r"^\s*/\s*拼(?=@|\s|$)"
+"""`/拼 @某人`: bead the @'d user's avatar. The char right after 拼 must be
+an @, whitespace, or end, so `/拼豆` and `/拼我` never collide."""
 AVATAR_USAGE_TEXT = "用法：/拼我 拼你自己的头像；/拼 @某人 拼对方的头像（仅支持 QQ）。"
 AVATAR_PLATFORM_TEXT = "拼头像目前只支持 QQ，其他平台先用 /拼豆 发图吧。"
 AVATAR_QLOGO_URL = "https://q1.qlogo.cn/g?b=qq&nk={qq}&s=640"
@@ -98,7 +104,7 @@ class PindoubaPlugin(Star):
         self._last_trigger: dict[str, float] = {}
         # image content hash -> (timestamp, VLM scene params)
         self._cache: dict[str, tuple[float, dict]] = {}
-        # message_id -> claim timestamp; dedupes the command entry points
+        # message_id -> claim timestamp; dedupes the command/regex entry points
         self._inflight: dict[str, float] = {}
         # unified_msg_origin -> (timestamp, image ref) of the latest seen image
         self._last_image: dict[str, tuple[float, str]] = {}
@@ -111,15 +117,15 @@ class PindoubaPlugin(Star):
     # Entry points
     # ------------------------------------------------------------------ #
 
-    @filter.command("拼豆")
+    @filter.regex(TRIGGER_REGEX)
     async def pindouba_trigger(self, event: AstrMessageEvent):
-        """The one true entry point: `/拼豆` (+ image)."""
+        """The one true entry point: `/拼豆` (+ image), regardless of wake_prefix."""
         if not self._claim(event):
             return
         async for result in self._handle_trigger(event):
             yield result
 
-    @filter.command("拼我")
+    @filter.regex(AVATAR_SELF_REGEX)
     async def avatar_self_trigger(self, event: AstrMessageEvent):
         """`/拼我`: bead the sender's own avatar."""
         if not self._claim(event):
@@ -127,7 +133,7 @@ class PindoubaPlugin(Star):
         async for result in self._handle_avatar(event, None, "已使用你的头像。"):
             yield result
 
-    @filter.command("拼")
+    @filter.regex(AVATAR_AT_REGEX)
     async def avatar_at_trigger(self, event: AstrMessageEvent):
         """`/拼 @某人`: bead the @'d user's avatar."""
         if not self._claim(event):
