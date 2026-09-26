@@ -34,73 +34,235 @@ BRAILLE_DOTS = (
     (0, 3, 0x40),
     (1, 3, 0x80),
 )
-BEAD_PALETTE = (
-    # Classic perler-bead style palette (56 colors): quantizing bead colors
-    # to this set is what gives the mosaic its authentic handmade look.
-    # Neutrals
-    (255, 255, 255),  # pure white
-    (250, 240, 225),  # warm white
-    (236, 238, 236),  # white
-    (216, 216, 214),  # light gray
-    (160, 162, 158),  # gray
-    (128, 130, 132),  # mid gray
-    (105, 108, 106),  # dark gray
-    (48, 49, 47),  # black
-    # Red / pink / orange
-    (230, 30, 38),  # red
-    (150, 20, 30),  # dark red
-    (146, 64, 44),  # brick
-    (240, 98, 40),  # deep orange
-    (255, 127, 39),  # orange
-    (255, 180, 100),  # light orange
-    (252, 142, 112),  # salmon
-    (255, 152, 171),  # pink
-    (236, 78, 150),  # magenta
-    (236, 0, 140),  # hot pink
-    # Yellow
-    (255, 201, 14),  # yellow
-    (255, 215, 0),  # gold
-    (222, 190, 80),  # mustard
-    (255, 234, 166),  # pale yellow
-    # Brown / skin
-    (111, 63, 40),  # dark brown
-    (140, 86, 52),  # chestnut
-    (159, 106, 63),  # brown
-    (196, 98, 43),  # light brown
-    (211, 157, 98),  # tan
-    (188, 120, 80),  # deep tan
-    (238, 190, 148),  # light skin
-    (240, 160, 130),  # rosy skin
-    (247, 213, 180),  # pale skin
-    (252, 232, 214),  # very pale skin
-    # Green
-    (52, 92, 64),  # dark forest
-    (0, 129, 54),  # green
-    (84, 168, 70),  # light green
-    (146, 220, 160),  # mint
-    (178, 211, 125),  # pale green
-    (128, 128, 66),  # olive
-    (0, 168, 132),  # teal
-    # Blue / cyan
-    (30, 30, 60),  # midnight
-    (20, 36, 86),  # navy
-    (0, 110, 184),  # blue
-    (0, 160, 233),  # azure
-    (64, 170, 227),  # light blue
-    (150, 208, 241),  # pale blue
-    (210, 228, 242),  # ice blue
-    (70, 110, 150),  # steel blue
-    (108, 132, 190),  # periwinkle
-    (70, 60, 180),  # indigo
-    (0, 190, 200),  # cyan
-    # Purple
-    (90, 20, 90),  # plum
-    (120, 70, 160),  # purple
-    (138, 43, 226),  # violet
-    (178, 118, 200),  # light purple
-    (216, 178, 242),  # lavender
-    (230, 190, 250),  # lilac
+# Official MARD 221-color card: the de-facto standard bead numbering in CN
+# retail, so a chart/materials list can be shopped code-by-code. Data from
+# github.com/HansBug/pindou-color-data (MIT), cross-validated across public
+# sources; RGB values are screen references, not physical color guarantees.
+BEAD_COLORS: tuple[tuple[str, tuple[int, int, int]], ...] = (
+    ("A1", (250, 245, 205)),
+    ("A2", (252, 254, 214)),
+    ("A3", (252, 255, 146)),
+    ("A4", (247, 236, 92)),
+    ("A5", (255, 228, 75)),
+    ("A6", (253, 169, 81)),
+    ("A7", (250, 140, 79)),
+    ("A8", (249, 224, 69)),
+    ("A9", (249, 156, 95)),
+    ("A10", (244, 126, 54)),
+    ("A11", (254, 219, 153)),
+    ("A12", (253, 162, 118)),
+    ("A13", (254, 198, 103)),
+    ("A14", (248, 88, 66)),
+    ("A15", (251, 246, 94)),
+    ("A16", (254, 255, 151)),
+    ("A17", (253, 225, 115)),
+    ("A18", (252, 191, 128)),
+    ("A19", (253, 126, 119)),
+    ("A20", (249, 214, 110)),
+    ("A21", (250, 227, 147)),
+    ("A22", (237, 248, 120)),
+    ("A23", (225, 201, 189)),
+    ("A24", (243, 246, 169)),
+    ("A25", (255, 215, 133)),
+    ("A26", (254, 200, 50)),
+    ("B1", (223, 241, 57)),
+    ("B2", (100, 243, 67)),
+    ("B3", (159, 246, 133)),
+    ("B4", (95, 223, 52)),
+    ("B5", (57, 225, 88)),
+    ("B6", (100, 224, 164)),
+    ("B7", (63, 174, 124)),
+    ("B8", (29, 158, 84)),
+    ("B9", (42, 80, 55)),
+    ("B10", (154, 209, 186)),
+    ("B11", (98, 112, 50)),
+    ("B12", (26, 110, 61)),
+    ("B13", (200, 232, 125)),
+    ("B14", (172, 232, 76)),
+    ("B15", (48, 83, 53)),
+    ("B16", (192, 237, 156)),
+    ("B17", (158, 179, 62)),
+    ("B18", (230, 237, 79)),
+    ("B19", (38, 183, 142)),
+    ("B20", (202, 237, 207)),
+    ("B21", (23, 98, 104)),
+    ("B22", (10, 66, 65)),
+    ("B23", (52, 59, 26)),
+    ("B24", (232, 250, 166)),
+    ("B25", (78, 132, 109)),
+    ("B26", (144, 124, 53)),
+    ("B27", (208, 224, 175)),
+    ("B28", (158, 229, 187)),
+    ("B29", (198, 223, 95)),
+    ("B30", (227, 251, 177)),
+    ("B31", (178, 230, 148)),
+    ("B32", (146, 173, 96)),
+    ("C1", (232, 255, 231)),
+    ("C2", (171, 248, 254)),
+    ("C3", (158, 224, 248)),
+    ("C4", (68, 205, 251)),
+    ("C5", (6, 171, 227)),
+    ("C6", (84, 167, 233)),
+    ("C7", (57, 119, 204)),
+    ("C8", (15, 82, 189)),
+    ("C9", (51, 73, 195)),
+    ("C10", (61, 187, 227)),
+    ("C11", (42, 222, 211)),
+    ("C12", (30, 51, 78)),
+    ("C13", (205, 231, 254)),
+    ("C14", (214, 253, 252)),
+    ("C15", (33, 197, 196)),
+    ("C16", (24, 88, 162)),
+    ("C17", (2, 209, 243)),
+    ("C18", (33, 50, 68)),
+    ("C19", (24, 134, 144)),
+    ("C20", (26, 112, 169)),
+    ("C21", (190, 221, 252)),
+    ("C22", (107, 177, 187)),
+    ("C23", (200, 226, 249)),
+    ("C24", (126, 197, 249)),
+    ("C25", (169, 232, 224)),
+    ("C26", (66, 173, 209)),
+    ("C27", (208, 222, 239)),
+    ("C28", (189, 206, 237)),
+    ("C29", (54, 74, 137)),
+    ("D1", (172, 183, 239)),
+    ("D2", (134, 141, 211)),
+    ("D3", (54, 83, 175)),
+    ("D4", (22, 44, 126)),
+    ("D5", (179, 78, 198)),
+    ("D6", (179, 123, 220)),
+    ("D7", (135, 88, 169)),
+    ("D8", (227, 210, 254)),
+    ("D9", (214, 186, 245)),
+    ("D10", (48, 26, 73)),
+    ("D11", (188, 186, 226)),
+    ("D12", (220, 153, 206)),
+    ("D13", (181, 3, 143)),
+    ("D14", (136, 40, 147)),
+    ("D15", (47, 30, 142)),
+    ("D16", (226, 228, 240)),
+    ("D17", (199, 211, 249)),
+    ("D18", (154, 100, 184)),
+    ("D19", (216, 194, 217)),
+    ("D20", (156, 52, 173)),
+    ("D21", (148, 5, 149)),
+    ("D22", (56, 57, 149)),
+    ("D23", (250, 219, 248)),
+    ("D24", (118, 138, 225)),
+    ("D25", (73, 80, 194)),
+    ("D26", (214, 198, 235)),
+    ("E1", (246, 212, 203)),
+    ("E2", (252, 193, 221)),
+    ("E3", (246, 189, 232)),
+    ("E4", (233, 99, 158)),
+    ("E5", (241, 85, 159)),
+    ("E6", (236, 64, 114)),
+    ("E7", (198, 54, 116)),
+    ("E8", (253, 219, 233)),
+    ("E9", (229, 117, 199)),
+    ("E10", (211, 57, 151)),
+    ("E11", (247, 218, 212)),
+    ("E12", (248, 147, 191)),
+    ("E13", (181, 2, 106)),
+    ("E14", (250, 212, 191)),
+    ("E15", (245, 201, 202)),
+    ("E16", (251, 244, 236)),
+    ("E17", (247, 227, 236)),
+    ("E18", (251, 203, 219)),
+    ("E19", (246, 187, 209)),
+    ("E20", (215, 198, 206)),
+    ("E21", (192, 157, 164)),
+    ("E22", (181, 139, 159)),
+    ("E23", (147, 125, 138)),
+    ("E24", (222, 190, 229)),
+    ("F1", (255, 146, 128)),
+    ("F2", (247, 61, 72)),
+    ("F3", (239, 77, 62)),
+    ("F4", (249, 43, 64)),
+    ("F5", (227, 3, 40)),
+    ("F6", (145, 54, 53)),
+    ("F7", (145, 25, 50)),
+    ("F8", (187, 1, 38)),
+    ("F9", (224, 103, 122)),
+    ("F10", (135, 70, 40)),
+    ("F11", (111, 50, 29)),
+    ("F12", (248, 81, 109)),
+    ("F13", (244, 92, 69)),
+    ("F14", (252, 173, 178)),
+    ("F15", (213, 5, 39)),
+    ("F16", (248, 192, 169)),
+    ("F17", (232, 155, 125)),
+    ("F18", (208, 126, 74)),
+    ("F19", (190, 69, 74)),
+    ("F20", (198, 148, 149)),
+    ("F21", (242, 187, 198)),
+    ("F22", (247, 195, 208)),
+    ("F23", (236, 128, 109)),
+    ("F24", (224, 157, 175)),
+    ("F25", (232, 72, 84)),
+    ("G1", (255, 228, 211)),
+    ("G2", (252, 198, 172)),
+    ("G3", (241, 196, 165)),
+    ("G4", (220, 179, 135)),
+    ("G5", (231, 179, 78)),
+    ("G6", (243, 160, 20)),
+    ("G7", (152, 80, 58)),
+    ("G8", (75, 43, 28)),
+    ("G9", (228, 182, 133)),
+    ("G10", (218, 140, 66)),
+    ("G11", (218, 200, 152)),
+    ("G12", (254, 201, 147)),
+    ("G13", (178, 113, 75)),
+    ("G14", (139, 104, 76)),
+    ("G15", (252, 249, 224)),
+    ("G16", (242, 216, 193)),
+    ("G17", (121, 84, 78)),
+    ("G18", (255, 228, 214)),
+    ("G19", (221, 125, 65)),
+    ("G20", (165, 69, 47)),
+    ("G21", (179, 133, 97)),
+    ("H1", (251, 251, 251)),
+    ("H2", (255, 255, 255)),
+    ("H3", (180, 180, 180)),
+    ("H4", (135, 135, 135)),
+    ("H5", (70, 70, 72)),
+    ("H6", (44, 44, 44)),
+    ("H7", (1, 1, 1)),
+    ("H8", (231, 214, 220)),
+    ("H9", (239, 237, 238)),
+    ("H10", (236, 234, 235)),
+    ("H11", (205, 205, 205)),
+    ("H12", (253, 246, 238)),
+    ("H13", (244, 239, 209)),
+    ("H14", (206, 215, 212)),
+    ("H15", (152, 166, 166)),
+    ("H16", (27, 18, 19)),
+    ("H17", (240, 238, 239)),
+    ("H18", (252, 255, 248)),
+    ("H19", (242, 238, 229)),
+    ("H20", (150, 160, 159)),
+    ("H21", (255, 251, 225)),
+    ("H22", (202, 202, 218)),
+    ("H23", (155, 156, 148)),
+    ("M1", (187, 198, 182)),
+    ("M2", (144, 153, 148)),
+    ("M3", (105, 126, 128)),
+    ("M4", (224, 212, 188)),
+    ("M5", (208, 203, 174)),
+    ("M6", (176, 170, 134)),
+    ("M7", (176, 167, 150)),
+    ("M8", (174, 128, 130)),
+    ("M9", (168, 135, 100)),
+    ("M10", (198, 178, 187)),
+    ("M11", (157, 118, 147)),
+    ("M12", (100, 75, 81)),
+    ("M13", (199, 146, 102)),
+    ("M14", (195, 116, 99)),
+    ("M15", (116, 125, 122)),
 )
+BEAD_PALETTE = tuple(rgb for _, rgb in BEAD_COLORS)
+BEAD_CODE_BY_RGB = {rgb: code for code, rgb in BEAD_COLORS}
 MONO_FONTS = (
     "consola.ttf",  # Windows (Consolas)
     "cour.ttf",  # Windows (Courier New)
@@ -114,6 +276,10 @@ BEAD_PAD = 6  # canvas margin in px
 MAX_ASPECT_RATIO = 6.0
 """Reject images more elongated than this (checked after cropping): the
 max-rows clamp would squeeze them into an unrecognizably narrow strip."""
+
+BEAD_CHART_CELL = 30  # chart cell size in px; codes need room to stay legible
+BEAD_CHART_MIN_CELL = 20  # below this codes get unreadable; give up instead
+BEAD_CHART_MAX_DIM = 6000  # cap for either chart side (grid extent, no pad)
 
 
 @dataclass
@@ -520,10 +686,8 @@ def _render_line(
 # --------------------------------------------------------------------- #
 
 
-def _nearest_bead_color(
-    color: tuple[int, int, int] | list[float],
-) -> tuple[int, int, int]:
-    """Quantize a color to the closest entry of the bead palette.
+def _nearest_bead_index(color: tuple[int, int, int] | list[float]) -> int:
+    """Index of the closest bead-palette entry.
 
     Distance is green-weighted, (2dr)^2 + (4dg)^2 + (3db)^2: human vision
     resolves greens better than reds and blues, so holding the green channel
@@ -533,13 +697,31 @@ def _nearest_bead_color(
         color: An RGB color (ints, or float cells while dithering).
 
     Returns:
-        The palette color with the smallest weighted distance.
+        The palette index with the smallest weighted distance.
     """
     r, g, b = color
     return min(
-        BEAD_PALETTE,
-        key=lambda p: 4 * (p[0] - r) ** 2 + 16 * (p[1] - g) ** 2 + 9 * (p[2] - b) ** 2,
+        range(len(BEAD_PALETTE)),
+        key=lambda i: (
+            4 * (BEAD_PALETTE[i][0] - r) ** 2
+            + 16 * (BEAD_PALETTE[i][1] - g) ** 2
+            + 9 * (BEAD_PALETTE[i][2] - b) ** 2
+        ),
     )
+
+
+def _nearest_bead_color(
+    color: tuple[int, int, int] | list[float],
+) -> tuple[int, int, int]:
+    """Quantize a color to the closest entry of the bead palette.
+
+    Args:
+        color: An RGB color (ints, or float cells while dithering).
+
+    Returns:
+        The palette color with the smallest weighted distance.
+    """
+    return BEAD_PALETTE[_nearest_bead_index(color)]
 
 
 def _paint_bead_png(
@@ -575,6 +757,99 @@ def _paint_bead_png(
             draw.rectangle(
                 [x, y, x + BEAD_PITCH - 1, y + BEAD_PITCH - 1],
                 fill=rgb if color else fg,
+            )
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(out_path)
+    return str(out_path)
+
+
+def bead_material_counts(art: AsciiArt) -> dict[str, int] | None:
+    """Count beads per MARD code over the whole bead grid.
+
+    Args:
+        art: The bead grid (kind "bead").
+
+    Returns:
+        code -> bead count over all cells (background included), or None
+        when any cell color is not on the palette (grid not quantized).
+    """
+    counts: dict[str, int] = {}
+    for row in art.rows:
+        for _, rgb in row:
+            code = BEAD_CODE_BY_RGB.get(tuple(rgb))
+            if code is None:
+                return None
+            counts[code] = counts.get(code, 0) + 1
+    return counts
+
+
+def bead_material_lines(counts: dict[str, int]) -> list[str]:
+    """Format the materials list as user-facing caption lines.
+
+    Args:
+        counts: code -> bead count (from bead_material_counts).
+
+    Returns:
+        Lines with the totals, the top-5 consumers, and (when present) a
+        note listing low-count colors worth buying as separate small bags.
+    """
+    total = sum(counts.values())
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    lines = [f"材料清单：需要 {len(counts)} 种颜色，共 {total:,} 颗"]
+    lines.append("高耗色：" + "、".join(f"{code}×{n:,}" for code, n in ranked[:5]))
+    minor = [code for code, n in ranked if n <= 10]
+    if minor:
+        lines.append(f"另有 {len(minor)} 种少量色（每种不超过 10 颗），建议单独分装")
+    return lines
+
+
+def paint_bead_chart_png(art: AsciiArt, out_path: str | Path) -> str | None:
+    """Paint the per-cell code chart: every bead square carries its MARD code.
+
+    Args:
+        art: The bead grid (kind "bead", palette-quantized).
+        out_path: Destination PNG path.
+
+    Returns:
+        The destination path, or None when the grid is too large for a
+        legible chart (the cell cannot shrink past BEAD_CHART_MIN_CELL).
+    """
+    m = max(art.width, art.height)
+    cell = BEAD_CHART_CELL
+    if m * cell > BEAD_CHART_MAX_DIM:
+        cell = BEAD_CHART_MAX_DIM // m
+    if cell < BEAD_CHART_MIN_CELL:
+        return None
+    font = _load_mono_font(max(9, int(cell * 0.42)))
+    width = art.width * cell + BEAD_PAD * 2
+    height = art.height * cell + BEAD_PAD * 2
+    canvas = Image.new("RGB", (width, height), (250, 250, 250))
+    draw = ImageDraw.Draw(canvas)
+    for r, row in enumerate(art.rows):
+        y = BEAD_PAD + r * cell
+        for c, (_, rgb) in enumerate(row):
+            x = BEAD_PAD + c * cell
+            draw.rectangle(
+                [x, y, x + cell - 1, y + cell - 1],
+                fill=rgb,
+                outline=(150, 150, 150),
+            )
+            code = BEAD_CODE_BY_RGB.get(tuple(rgb))
+            if code is None:
+                continue
+            # Text color flips against the cell so codes stay readable on
+            # both dark and light beads.
+            luma = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
+            fg = (20, 20, 20) if luma > 140 else (245, 245, 245)
+            tb = draw.textbbox((0, 0), code, font=font)
+            draw.text(
+                (
+                    x + (cell - tb[2] + tb[0]) / 2 - tb[0],
+                    y + (cell - tb[3] + tb[1]) / 2 - tb[1],
+                ),
+                code,
+                fill=fg,
+                font=font,
             )
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     canvas.save(out_path)

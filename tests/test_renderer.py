@@ -13,12 +13,18 @@ except ImportError:  # Pillow missing; renderer cannot be tested.
     raise SystemExit("Pillow is required: pip install pillow")
 
 from renderer import (  # noqa: E402  (imports follow the Pillow availability check)
+    BEAD_CODE_BY_RGB,
+    BEAD_COLORS,
     BEAD_PAD,
     BEAD_PALETTE,
     BEAD_PITCH,
     AsciiArt,
     _nearest_bead_color,
+    _nearest_bead_index,
+    bead_material_counts,
+    bead_material_lines,
     paint_ascii_art_png,
+    paint_bead_chart_png,
     render_ascii_art,
 )
 
@@ -212,12 +218,15 @@ class BeadTests(unittest.TestCase):
         dithered = render_ascii_art(image, mode="bead", width=40, bead_dither=True)
         self.assertEqual(plain.rows, dithered.rows)
 
-    def test_nearest_bead_color_weights_green(self):
-        # (0, 0, 72) is euclidean-closest to navy (20, 36, 86), but the
-        # green-weighted metric keeps green tight and picks midnight
-        # (30, 30, 60) instead; exact palette hits must map to themselves.
-        self.assertEqual(_nearest_bead_color((0, 0, 72)), (30, 30, 60))
-        self.assertEqual(_nearest_bead_color((0, 129, 54)), (0, 129, 54))
+    def test_nearest_bead_color_contract(self):
+        # Exact palette hits map to themselves, the color/index helpers stay
+        # consistent, and quantized results are always palette members.
+        probes = [(0, 0, 72), (250, 30, 90), (12.0, 200.5, 33.0), (255, 255, 254)]
+        for probe in probes:
+            idx = _nearest_bead_index(probe)
+            self.assertEqual(_nearest_bead_color(probe), BEAD_PALETTE[idx])
+        for rgb in BEAD_PALETTE[:10]:
+            self.assertEqual(_nearest_bead_color(rgb), rgb)
 
     def test_bead_paint_produces_png(self):
         art = render_ascii_art(self.image, mode="bead", width=40)
@@ -255,6 +264,91 @@ class BeadTests(unittest.TestCase):
         art = render_ascii_art(self.image, mode="bead", width=80, max_rows=10)
         self.assertEqual(art.height, 10)
         self.assertLessEqual(art.width, 80)
+
+
+class MardPaletteTests(unittest.TestCase):
+    def test_palette_is_the_official_mard_221(self):
+        # 221 unique purchasable codes; every entry round-trips through the
+        # rgb -> code map that the materials list relies on.
+        self.assertEqual(len(BEAD_COLORS), 221)
+        codes = [code for code, _ in BEAD_COLORS]
+        self.assertEqual(len(set(codes)), 221)
+        for _, rgb in BEAD_COLORS:
+            self.assertEqual(len(rgb), 3)
+            self.assertTrue(all(0 <= v <= 255 for v in rgb))
+            self.assertEqual(BEAD_CODE_BY_RGB[rgb], _)
+            self.assertIn(rgb, BEAD_PALETTE)
+
+    def test_quantized_render_is_countable(self):
+        import tempfile
+
+        image = make_gradient_image(Path(tempfile.mkdtemp()) / "grad.png")
+        art = render_ascii_art(image, mode="bead", width=40, bead_palette=True)
+        counts = bead_material_counts(art)
+        self.assertIsNotNone(counts)
+        self.assertEqual(sum(counts.values()), art.width * art.height)
+        self.assertTrue(set(counts) <= {code for code, _ in BEAD_COLORS})
+
+
+class BeadChartTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+
+        self.tmp = Path(tempfile.mkdtemp())
+
+    @staticmethod
+    def fake_bead_art(colors2d):
+        return AsciiArt(
+            rows=[[("■", rgb) for rgb in row] for row in colors2d],
+            kind="bead",
+        )
+
+    def test_material_counts_sum_equals_cells(self):
+        a, b = BEAD_COLORS[0][1], BEAD_COLORS[50][1]
+        art = self.fake_bead_art([[a, b, a], [b, a, b]])
+        counts = bead_material_counts(art)
+        self.assertEqual(sum(counts.values()), 6)
+        self.assertEqual(counts, {BEAD_CODE_BY_RGB[a]: 3, BEAD_CODE_BY_RGB[b]: 3})
+
+    def test_material_counts_none_when_not_quantized(self):
+        art = self.fake_bead_art([[(1, 2, 3), (255, 255, 255)]])
+        self.assertIsNone(bead_material_counts(art))
+
+    def test_material_lines_ranking_and_format(self):
+        counts = {"A1": 5000, "B2": 1200, "C3": 800, "D4": 300, "E5": 100, "F6": 7}
+        lines = bead_material_lines(counts)
+        self.assertEqual(lines[0], "材料清单：需要 6 种颜色，共 7,407 颗")
+        self.assertIn("A1×5,000", lines[1])
+        self.assertIn("E5×100", lines[1])
+        self.assertNotIn("F6", lines[1])  # only the top 5 make the cut
+        self.assertIn("1 种少量色", lines[2])
+        self.assertIn("单独分装", lines[2])
+
+    def test_material_lines_without_minor_colors(self):
+        lines = bead_material_lines({"A1": 500, "B2": 60})
+        self.assertEqual(len(lines), 2)
+
+    def test_chart_paints_one_code_per_cell(self):
+        a, b = BEAD_COLORS[0][1], BEAD_COLORS[100][1]
+        art = self.fake_bead_art([[a, b, a, b], [b, a, b, a], [a, a, b, b]])
+        out = paint_bead_chart_png(art, self.tmp / "chart.png")
+        self.assertIsNotNone(out)
+        with Image.open(out) as png:
+            self.assertEqual(png.size, (4 * 30 + BEAD_PAD * 2, 3 * 30 + BEAD_PAD * 2))
+
+    def test_chart_shrinks_cell_for_large_grids(self):
+        art = self.fake_bead_art([[(255, 255, 255)] * 20 for _ in range(250)])
+        out = paint_bead_chart_png(art, self.tmp / "big.png")
+        self.assertIsNotNone(out)
+        with Image.open(out) as png:
+            self.assertEqual(
+                png.size, (20 * 24 + BEAD_PAD * 2, 250 * 24 + BEAD_PAD * 2)
+            )
+
+    def test_chart_gives_up_on_oversized_grids(self):
+        # 400 rows cannot fit within the canvas cap at a legible cell size.
+        art = self.fake_bead_art([[(255, 255, 255)] * 20 for _ in range(400)])
+        self.assertIsNone(paint_bead_chart_png(art, self.tmp / "huge.png"))
 
 
 class PaintTests(unittest.TestCase):

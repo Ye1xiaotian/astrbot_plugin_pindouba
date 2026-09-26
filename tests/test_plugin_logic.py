@@ -144,6 +144,7 @@ DEFAULT_CONFIG = {
     "char_width": 40,
     "bead_palette": False,
     "bead_dither": False,
+    "bead_chart": False,
     "auto_crop": True,
     "enable_caption": True,
     "color": True,
@@ -157,18 +158,22 @@ DEFAULT_CONFIG = {
 
 
 class FakeResult:
-    """Records a chained message/file_image call."""
+    """Records a chained message/file_image call (multiple images allowed)."""
 
     def __init__(self):
         self.text = None
-        self.image_path = None
+        self.image_paths = []
+
+    @property
+    def image_path(self):
+        return self.image_paths[0] if self.image_paths else None
 
     def message(self, text):
         self.text = text
         return self
 
     def file_image(self, path):
-        self.image_path = path
+        self.image_paths.append(path)
         return self
 
 
@@ -248,10 +253,13 @@ class TriggerTests(unittest.TestCase):
         self.plugin = make_plugin(DEFAULT_CONFIG)
 
     def test_trigger_regex_matches_command_forms(self):
-        for text in ["/拼豆", "/拼豆 看这个", "/ 拼豆"]:
+        # Patterns double as dashboard display text, so they are plain
+        # substrings: match anywhere in the message, slash glued to the word.
+        for text in ["/拼豆", "/拼豆 看这个", "来一张 /拼豆"]:
             self.assertRegex(text.strip(), main.TRIGGER_REGEX, msg=text)
         for text in [
             "拼豆",
+            "/ 拼豆",  # spaces between slash and word no longer count
             "颜文字",
             "/颜文字",
             "/kaomoji",
@@ -264,16 +272,18 @@ class TriggerTests(unittest.TestCase):
             self.assertNotRegex(text.strip(), main.TRIGGER_REGEX, msg=text)
 
     def test_avatar_regexes_are_exclusive(self):
-        # Self avatar only matches /拼我; @ avatar matches /拼 followed by
-        # @/space/end; neither ever matches /拼豆 or each other.
+        # /拼我 and /拼[ @] stay mutually exclusive with /拼豆 because the
+        # char right after 拼 (豆/我 vs @/space) disambiguates. Bare "/拼"
+        # no longer replies with usage: a readable pattern needs a char to
+        # anchor on.
         for text in ["/拼我", "/拼我 谢谢"]:
             self.assertRegex(text, main.AVATAR_SELF_REGEX, msg=text)
             self.assertNotRegex(text, main.AVATAR_AT_REGEX, msg=text)
             self.assertNotRegex(text, main.TRIGGER_REGEX, msg=text)
-        for text in ["/拼 @小明", "/拼@小明", "/拼 "]:
+        for text in ["/拼 @小明", "/拼@小明"]:
             self.assertRegex(text, main.AVATAR_AT_REGEX, msg=text)
             self.assertNotRegex(text, main.AVATAR_SELF_REGEX, msg=text)
-        for text in ["/拼豆", "/拼豆 @小明", "拼我", "/拼头像"]:
+        for text in ["/拼", "/拼豆", "/拼豆 @小明", "/拼头像", "拼我"]:
             self.assertNotRegex(text, main.AVATAR_AT_REGEX, msg=text)
             self.assertNotRegex(text, main.AVATAR_SELF_REGEX, msg=text)
 
@@ -584,6 +594,60 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("图片数据异常", flows[0].text)
 
 
+class BeadChartFlowTests(unittest.TestCase):
+    """End-to-end chart/materials behavior of _generate_flow (pure path)."""
+
+    def setUp(self):
+        self.plugin = make_plugin(dict(DEFAULT_CONFIG))
+        self.plugin.context = type("Ctx", (), {})()
+        self.plugin.context.get_using_provider = lambda umo=None: None
+        self.plugin.context.get_provider_by_id = lambda pid=None: None
+        self.plugin.config["char_width"] = 40  # small grid keeps the chart fast
+
+    def _run(self):
+        async def collect():
+            event = FakeEvent()
+            return event, [
+                r
+                async for r in self.plugin._generate_flow(
+                    event, FakeImage("http://x/cat.jpg"), []
+                )
+            ]
+
+        return asyncio.run(collect())
+
+    def test_chart_flow_adds_chart_and_materials(self):
+        self.plugin.config["bead_chart"] = True
+        event, flows = self._run()
+        self.assertEqual(len(flows[0].image_paths), 2)  # art + chart
+        caption = flows[1].text
+        self.assertIn("已按 MARD 色板量化", caption)  # forced quantization note
+        self.assertIn("材料清单：", caption)
+        self.assertIn("高耗色：", caption)
+        self.assertIn("共", caption)
+        self.assertTrue(event.results)  # both results went through the event
+
+    def test_chart_flow_without_forced_quant_note(self):
+        self.plugin.config["bead_chart"] = True
+        self.plugin.config["bead_palette"] = True
+        _, flows = self._run()
+        self.assertEqual(len(flows[0].image_paths), 2)
+        self.assertNotIn("已按 MARD", flows[1].text)
+        self.assertIn("材料清单：", flows[1].text)
+
+    def test_chart_skipped_for_non_bead_mode(self):
+        self.plugin.config["bead_chart"] = True
+        self.plugin.config["render_mode"] = "braille"
+        _, flows = self._run()
+        self.assertEqual(len(flows[0].image_paths), 1)
+        self.assertIn("仅支持拼豆", flows[1].text)
+
+    def test_chart_off_keeps_single_image(self):
+        _, flows = self._run()
+        self.assertEqual(len(flows[0].image_paths), 1)
+        self.assertNotIn("材料清单", flows[1].text or "")
+
+
 class AvatarStubImage(main.Image):
     """Image stub that records the constructed URL and serves real pixels."""
 
@@ -692,6 +756,15 @@ class AvatarTests(unittest.TestCase):
             self.plugin._handle_avatar(FakeEvent(), None, "已使用你的头像。")
         )
         self.assertIn("冷却", flows[0].text)
+
+    def test_avatar_with_chart_sends_chart_and_materials(self):
+        self.plugin.config["bead_chart"] = True
+        self.plugin.config["char_width"] = 24
+        flows = self._drain(
+            self.plugin._handle_avatar(FakeEvent(), None, "已使用你的头像。")
+        )
+        self.assertEqual(len(flows[0].image_paths), 2)
+        self.assertIn("材料清单：", flows[1].text)
 
 
 class FakeResp:

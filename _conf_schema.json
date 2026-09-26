@@ -18,7 +18,7 @@
     },
     "render_mode": {
         "description": "渲染模式",
-        "hint": "auto/bead：拼豆风格彩色圆点马赛克，全图逐格覆盖（含背景），还原度最高，推荐；braille：盲文点阵（2×4 点/字符 + 抖动）；shading：灰阶字符梯度 + 抖动，复古终端风；line：Sobel 边缘描线，适合干净线稿",
+        "hint": "auto/bead：拼豆风格方形像素马赛克，全图逐格覆盖（含背景），还原度最高，推荐；braille：盲文点阵（2×4 点/字符 + 抖动）；shading：灰阶字符梯度 + 抖动，复古终端风；line：Sobel 边缘描线，适合干净线稿",
         "type": "string",
         "options": ["auto", "bead", "braille", "shading", "line"],
         "default": "auto"
@@ -36,13 +36,19 @@
     },
     "bead_palette": {
         "description": "拼豆色板量化",
-        "hint": "开启后拼豆颜色量化到 56 色经典拼豆色板，手工感更强，但与原图色彩有偏差；默认关闭以忠实还原原图颜色",
+        "hint": "开启后拼豆颜色量化到 MARD 221 色官方色板（国内主流色号体系），手工感更强，且每个格子都对应可购买的色号；默认关闭以忠实还原原图颜色",
         "type": "bool",
         "default": false
     },
     "bead_dither": {
         "description": "拼豆色板抖动",
         "hint": "bead_palette 开启时生效：把每格的选色误差摊给相邻格子（误差扩散），渐变过渡更平滑、不容易出现大块色带，近看会有细颗粒感。bead_palette 关闭时此项无效",
+        "type": "bool",
+        "default": false
+    },
+    "bead_chart": {
+        "description": "拼豆图纸与材料清单",
+        "hint": "bead 模式下追加一张每格标注 MARD 色号的图纸，回复文字给出用色数、总颗数与高耗色排行，可照单买豆。开启后自动按色板量化（等效临时开启 bead_palette）",
         "type": "bool",
         "default": false
     },

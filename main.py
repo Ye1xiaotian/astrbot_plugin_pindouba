@@ -15,11 +15,25 @@ from astrbot.api.star import Context, Star
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
 try:
-    from .renderer import AsciiArt, paint_ascii_art_png, render_ascii_art
+    from .renderer import (
+        AsciiArt,
+        bead_material_counts,
+        bead_material_lines,
+        paint_ascii_art_png,
+        paint_bead_chart_png,
+        render_ascii_art,
+    )
 except (
     ImportError
 ):  # Fallback when the plugin dir is imported as a plain module (tests).
-    from renderer import AsciiArt, paint_ascii_art_png, render_ascii_art
+    from renderer import (
+        AsciiArt,
+        bead_material_counts,
+        bead_material_lines,
+        paint_ascii_art_png,
+        paint_bead_chart_png,
+        render_ascii_art,
+    )
 
 EXTRACT_ATTEMPTS = 2
 """Scene extraction: 1 call + 1 retry on timeout/exception/illegal JSON."""
@@ -34,15 +48,17 @@ USAGE_TEXT = (
     "（当前消息未检测到图片）"
 )
 PROCESSING_TEXT = "正在埋头拼豆，请稍候…"
-TRIGGER_REGEX = r"^\s*/\s*拼豆(?:\s|$)"
-"""The one wake word: /拼豆 (slash required; not affected by wake_prefix)."""
-"""Fallback trigger pattern; matches the command with or without a slash
-prefix regardless of the host's wake_prefix configuration."""
-AVATAR_SELF_REGEX = r"^\s*/\s*拼我(?:\s|$)"
+# Trigger regexes double as the dashboard's command display (the panel shows
+# RegexFilter patterns verbatim), so they stay short and readable. re.search
+# semantics: /拼豆 and /拼我 match anywhere; /拼 only pairs with an @ or a
+# space right after it, which keeps the three mutually exclusive.
+TRIGGER_REGEX = r"/拼豆"
+"""`/拼豆`: the one wake word (regex triggers bypass wake_prefix)."""
+AVATAR_SELF_REGEX = r"/拼我"
 """`/拼我`: bead the sender's own avatar."""
-AVATAR_AT_REGEX = r"^\s*/\s*拼(?=@|\s|$)"
-"""`/拼 @某人`: bead the @'d user's avatar. The char right after 拼 must be
-an @, whitespace, or end, so `/拼豆` and `/拼我` never collide."""
+AVATAR_AT_REGEX = r"/拼[ @]"
+"""`/拼 @某人`: bead the @'d user's avatar. `/拼豆` and `/拼我` put a word
+right after 拼, so they never match this pattern."""
 AVATAR_USAGE_TEXT = "用法：/拼我 拼你自己的头像；/拼 @某人 拼对方的头像（仅支持 QQ）。"
 AVATAR_PLATFORM_TEXT = "拼头像目前只支持 QQ，其他平台先用 /拼豆 发图吧。"
 AVATAR_QLOGO_URL = "https://q1.qlogo.cn/g?b=qq&nk={qq}&s=640"
@@ -367,7 +383,35 @@ class PindoubaPlugin(Star):
             f"charart_{int(time.time())}_{uuid.uuid4().hex[:8]}.png"
         )
         paint_ascii_art_png(art, out_path, color=bool(self.config.get("color", True)))
-        yield event.make_result().file_image(str(out_path))
+        result = event.make_result().file_image(str(out_path))
+
+        chart_on = bool(self.config.get("bead_chart", False))
+        if chart_on and art.kind != "bead":
+            caption_bits.append("图纸功能仅支持拼豆（bead）渲染模式")
+        elif chart_on:
+            counts = bead_material_counts(art)
+            if counts is None:
+                logger.warning("[pindouba] chart skipped: art is not quantized")
+            else:
+                if not self.config.get("bead_palette", False):
+                    caption_bits.append("已按 MARD 色板量化（生成图纸需要）")
+                caption_bits.extend(bead_material_lines(counts))
+                chart_path = Path(get_astrbot_temp_path()) / (
+                    f"beadchart_{int(time.time())}_{uuid.uuid4().hex[:8]}.png"
+                )
+                try:
+                    chart_made = paint_bead_chart_png(art, chart_path)
+                except Exception as e:
+                    logger.error(f"[pindouba] chart painting failed: {e}")
+                    chart_made = None
+                if chart_made:
+                    result.file_image(chart_made)
+                else:
+                    caption_bits.append(
+                        "图纸尺寸超出上限（格子数过多），仅提供材料清单"
+                    )
+
+        yield result
         if caption_bits:
             yield event.make_result().message("\n".join(caption_bits))
 
@@ -422,6 +466,11 @@ class PindoubaPlugin(Star):
         crop = self._scene_crop_fractions(scene)
         palette = bool(self.config.get("bead_palette", False))
         dither = bool(self.config.get("bead_dither", False))
+        # The chart/materials list must describe the exact beads in the art,
+        # so a chart request forces palette quantization: truecolor cells
+        # cannot be mapped to purchasable MARD codes.
+        if not palette and self.config.get("bead_chart", False) and mode == "bead":
+            palette = True
         art = render_ascii_art(
             image_path,
             mode=mode,
