@@ -33,7 +33,7 @@ help: |
   可选配置一个支持图片输入的模型，用来识别内容和裁剪主体。
   把 enable_caption 和 auto_crop 都关掉就完全不调用模型，出图最快。
   模型不可用时按原图直接渲染。
-version: 0.6.2
+version: 0.6.3
 author: Ye1xiaotian
 repo: https://github.com/Ye1xiaotian/astrbot_plugin_pindouba
 astrbot_version: ">=4.0,<5"
