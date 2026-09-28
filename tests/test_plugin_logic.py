@@ -629,6 +629,16 @@ class BeadChartFlowTests(unittest.TestCase):
         self.assertIn("共", caption)
         self.assertTrue(event.results)
 
+    def test_chart_flow_merges_minor_colors(self):
+        # Dithering spawns many low-count colors; the chart pipeline must
+        # fold them into well-used neighbors and say so in the caption.
+        self.plugin.config["bead_chart"] = True
+        self.plugin.config["bead_dither"] = True
+        _, flows = self._run()
+        caption = flows[0].text
+        self.assertIn("已合并", caption)
+        self.assertNotIn("建议单独分装", caption)  # minors are gone
+
     def test_chart_flow_without_forced_quant_note(self):
         self.plugin.config["bead_chart"] = True
         self.plugin.config["bead_palette"] = True

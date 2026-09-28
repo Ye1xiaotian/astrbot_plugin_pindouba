@@ -19,10 +19,13 @@ from renderer import (  # noqa: E402  (imports follow the Pillow availability ch
     BEAD_PALETTE,
     BEAD_PITCH,
     AsciiArt,
+    _ciede2000,
     _nearest_bead_color,
     _nearest_bead_index,
+    _srgb_to_lab,
     bead_material_counts,
     bead_material_lines,
+    merge_minor_bead_colors,
     paint_ascii_art_png,
     paint_bead_chart_png,
     render_ascii_art,
@@ -266,6 +269,57 @@ class BeadTests(unittest.TestCase):
         self.assertLessEqual(art.width, 80)
 
 
+class Ciede2000Tests(unittest.TestCase):
+    def test_sharma_reference_vectors(self):
+        # Official CIEDE2000 test pairs (Sharma, Wu, Dalal 2005, table 1).
+        pairs = [
+            ((50.0, 2.6772, -79.7751), (50.0, 0.0, -82.7485), 2.0425),
+            ((50.0, 3.1571, -77.2803), (50.0, 0.0, -82.7485), 2.8615),
+            ((50.0, 2.8361, -74.0200), (50.0, 0.0, -82.7485), 3.4412),
+            ((50.0, -1.3802, -84.2814), (50.0, 0.0, -82.7485), 1.0000),
+            ((50.0, 2.5, 0.0), (73.0, 25.0, -18.0), 27.1492),
+            ((50.0, 2.5, 0.0), (61.0, -5.0, 29.0), 22.8977),
+            ((50.0, 2.5, 0.0), (58.0, 24.0, 15.0), 19.4535),
+        ]
+        for lab1, lab2, expected in pairs:
+            self.assertAlmostEqual(_ciede2000(lab1, lab2), expected, places=3)
+
+    def test_srgb_to_lab_anchor_colors(self):
+        L, a, b = _srgb_to_lab((255, 255, 255))
+        self.assertAlmostEqual(L, 100.0, places=1)
+        self.assertAlmostEqual(a, 0.0, places=1)
+        self.assertAlmostEqual(b, 0.0, places=1)
+        L, a, b = _srgb_to_lab((255, 0, 0))
+        self.assertAlmostEqual(L, 53.24, places=1)
+        self.assertAlmostEqual(a, 80.09, places=1)
+        self.assertAlmostEqual(b, 67.20, places=1)
+        L, a, b = _srgb_to_lab((0, 0, 0))
+        self.assertAlmostEqual(L, 0.0, places=1)
+
+    def test_nearest_index_clamps_out_of_range_dither_cells(self):
+        # Dithering can push accumulated error past 0-255; the lookup must
+        # clamp instead of raising on a fractional power.
+        idx = _nearest_bead_index((-4.2, 260.5, 128.0))
+        self.assertTrue(0 <= idx < len(BEAD_PALETTE))
+
+    def test_numpy_path_matches_exhaustive_scalar_ciede2000(self):
+        # The vectorized lookup must pick the same palette entry as a
+        # brute-force scalar CIEDE2000 scan over all 221 entries; the
+        # scalar oracle is built independently of the array path.
+        import random
+
+        palette_labs = tuple(_srgb_to_lab(rgb) for rgb in BEAD_PALETTE)
+        rng = random.Random(42)
+        for _ in range(200):
+            rgb = tuple(rng.randrange(256) for _ in range(3))
+            lab = _srgb_to_lab(rgb)
+            exhaustive = min(
+                range(len(BEAD_PALETTE)),
+                key=lambda i: _ciede2000(lab, palette_labs[i]),
+            )
+            self.assertEqual(_nearest_bead_index(rgb), exhaustive, msg=f"rgb={rgb}")
+
+
 class MardPaletteTests(unittest.TestCase):
     def test_palette_is_the_official_mard_221(self):
         # 221 unique purchasable codes; every entry round-trips through the
@@ -327,6 +381,50 @@ class BeadChartTests(unittest.TestCase):
     def test_material_lines_without_minor_colors(self):
         lines = bead_material_lines({"A1": 500, "B2": 60})
         self.assertEqual(len(lines), 2)
+
+    def test_merge_folds_minors_into_nearest_major(self):
+        # 12+12 cells for the palette-backed majors, a light and a dark
+        # minor nearby; each minor must fold into the closer major, with
+        # every cell count preserved.
+        light = BEAD_COLORS[0][1]
+        dark = next(rgb for _, rgb in BEAD_COLORS if sum(rgb) < 200)
+        near_light = tuple(min(255, v + 10) for v in light)
+        near_dark = tuple(max(0, v - 10) for v in dark)
+        art = self.fake_bead_art(
+            [[light] * 12 + [near_light] * 3 + [dark] * 12 + [near_dark] * 4]
+        )
+        merged = merge_minor_bead_colors(art)
+        self.assertEqual(merged, 2)
+        rgbs = {rgb for row in art.rows for _, rgb in row}
+        self.assertEqual(rgbs, {light, dark})
+        counts = bead_material_counts(art)
+        self.assertEqual(sum(counts.values()), 31)
+
+    def test_merge_skips_grids_with_no_major(self):
+        art = self.fake_bead_art([[(255, 0, 0)] * 5, [(0, 255, 0)] * 5])
+        before = [row[:] for row in art.rows]
+        self.assertEqual(merge_minor_bead_colors(art), 0)
+        self.assertEqual(art.rows, before)
+
+    def test_merge_noop_when_no_minors(self):
+        light, dark = (250, 245, 205), (20, 20, 20)
+        art = self.fake_bead_art([[light] * 12 + [dark] * 12])
+        before = [row[:] for row in art.rows]
+        self.assertEqual(merge_minor_bead_colors(art), 0)
+        self.assertEqual(art.rows, before)
+
+    def test_dithered_render_merges_clean(self):
+        # Dithering is the minor-color factory; a merged pass must leave no
+        # color at or below the threshold while keeping the cell total.
+        image = make_gradient_image(self.tmp / "grad.png")
+        art = render_ascii_art(
+            image, mode="bead", width=40, bead_palette=True, bead_dither=True
+        )
+        merged = merge_minor_bead_colors(art)
+        self.assertGreater(merged, 0)
+        counts = bead_material_counts(art)
+        self.assertEqual(sum(counts.values()), art.width * art.height)
+        self.assertTrue(all(n > 10 for n in counts.values()))
 
     def test_chart_paints_one_code_per_cell(self):
         a, b = BEAD_COLORS[0][1], BEAD_COLORS[100][1]

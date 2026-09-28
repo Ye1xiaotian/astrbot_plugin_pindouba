@@ -13,9 +13,11 @@ Every cell keeps the averaged color of its source pixels so the PNG painter
 can color characters (or individual braille dots) accordingly.
 """
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 SHADING_CHARS = "@%#*+=-:. "
@@ -280,6 +282,10 @@ max-rows clamp would squeeze them into an unrecognizably narrow strip."""
 BEAD_CHART_CELL = 30  # chart cell size in px; codes need room to stay legible
 BEAD_CHART_MIN_CELL = 20  # below this codes get unreadable; give up instead
 BEAD_CHART_MAX_DIM = 6000  # cap for either chart side (grid extent, no pad)
+MINOR_COLOR_MAX = 10
+"""Colors filling at most this many cells are "minor": not worth a whole
+bead bag, so the chart pipeline folds them into the nearest well-used
+color instead."""
 
 
 @dataclass
@@ -510,12 +516,22 @@ def _render_bead(
     # the next cell's nearest-palette lookup.
     cells = [[raw[3 * i], raw[3 * i + 1], raw[3 * i + 2]] for i in range(cols * rows)]
 
+    # Without dithering every cell is independent, so quantize the whole
+    # grid in one vectorized pass instead of per-cell palette searches.
+    keys = [tuple(cell) for cell in cells]
+    lut = _nearest_bead_colors_batch(keys) if palette and not dither else None
+
     rows_out: list[list[tuple[str, tuple[int, int, int]]]] = []
     for r in range(rows):
         row: list[tuple[str, tuple[int, int, int]]] = []
         for c in range(cols):
             i = r * cols + c
-            color = _nearest_bead_color(cells[i]) if palette else tuple(cells[i])
+            if lut is not None:
+                color = lut[keys[i]]
+            elif palette:
+                color = _nearest_bead_color(cells[i])
+            else:
+                color = tuple(cells[i])
             row.append(("■", color))
             if not (palette and dither):
                 continue
@@ -686,28 +702,257 @@ def _render_line(
 # --------------------------------------------------------------------- #
 
 
+def _srgb_to_lab(rgb: tuple[int, int, int]) -> tuple[float, float, float]:
+    """Convert an 8-bit sRGB color to CIE Lab (D65 reference white).
+
+    Args:
+        rgb: The color's red/green/blue components in 0-255.
+
+    Returns:
+        The (L, a, b) coordinates.
+    """
+
+    def linear(c: float) -> float:
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (linear(v / 255.0) for v in rgb)
+    x = (r * 0.4124564 + g * 0.3575761 + b * 0.1804375) / 0.95047  # D65 white X
+    y = r * 0.2126729 + g * 0.7151522 + b * 0.0721750
+    z = (r * 0.0193339 + g * 0.1191920 + b * 0.9503041) / 1.08883  # D65 white Z
+
+    def f(t: float) -> float:
+        return t ** (1 / 3) if t > 216 / 24389 else (841 / 108) * t + 4 / 29
+
+    fx, fy, fz = f(x), f(y), f(z)
+    return (116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz))
+
+
+def _ciede2000(
+    lab1: tuple[float, float, float], lab2: tuple[float, float, float]
+) -> float:
+    """CIEDE2000 color difference (Sharma et al. 2005 formulation).
+
+    Args:
+        lab1: First color as (L, a, b).
+        lab2: Second color as (L, a, b).
+
+    Returns:
+        The perceptual distance; 1.0 is roughly a just-noticeable
+        difference, ~2.3 the classic JND threshold.
+    """
+    L1, a1, b1 = lab1
+    L2, a2, b2 = lab2
+    C1 = math.hypot(a1, b1)
+    C2 = math.hypot(a2, b2)
+    Cbar7 = ((C1 + C2) / 2) ** 7
+    G = 0.5 * (1 - math.sqrt(Cbar7 / (Cbar7 + 25**7)))
+    a1p, a2p = (1 + G) * a1, (1 + G) * a2
+    C1p = math.hypot(a1p, b1)
+    C2p = math.hypot(a2p, b2)
+    h1p = math.degrees(math.atan2(b1, a1p)) % 360 if (a1p or b1) else 0.0
+    h2p = math.degrees(math.atan2(b2, a2p)) % 360 if (a2p or b2) else 0.0
+
+    dLp = L2 - L1
+    dCp = C2p - C1p
+    if C1p * C2p == 0:
+        dhp = 0.0
+    elif abs(h2p - h1p) <= 180:
+        dhp = h2p - h1p
+    elif h2p - h1p > 180:
+        dhp = h2p - h1p - 360
+    else:
+        dhp = h2p - h1p + 360
+    dHp = 2 * math.sqrt(C1p * C2p) * math.sin(math.radians(dhp) / 2)
+
+    Lbarp = (L1 + L2) / 2
+    Cbarp = (C1p + C2p) / 2
+    if C1p * C2p == 0:
+        hbarp = h1p + h2p
+    elif abs(h1p - h2p) <= 180:
+        hbarp = (h1p + h2p) / 2
+    elif h1p + h2p < 360:
+        hbarp = (h1p + h2p + 360) / 2
+    else:
+        hbarp = (h1p + h2p - 360) / 2
+
+    T = (
+        1
+        - 0.17 * math.cos(math.radians(hbarp - 30))
+        + 0.24 * math.cos(math.radians(2 * hbarp))
+        + 0.32 * math.cos(math.radians(3 * hbarp + 6))
+        - 0.20 * math.cos(math.radians(4 * hbarp - 63))
+    )
+    dtheta = 30 * math.exp(-(((hbarp - 275) / 25) ** 2))
+    Cbarp7 = Cbarp**7
+    RC = 2 * math.sqrt(Cbarp7 / (Cbarp7 + 25**7))
+    SL = 1 + 0.015 * (Lbarp - 50) ** 2 / math.sqrt(20 + (Lbarp - 50) ** 2)
+    SC = 1 + 0.045 * Cbarp
+    SH = 1 + 0.015 * Cbarp * T
+    RT = -math.sin(math.radians(2 * dtheta)) * RC
+    return math.sqrt(
+        (dLp / SL) ** 2
+        + (dCp / SC) ** 2
+        + (dHp / SH) ** 2
+        + RT * (dCp / SC) * (dHp / SH)
+    )
+
+
+_NEAREST_INDEX_CACHE: dict[tuple[int, int, int], int] = {}
+
+
+def _srgb_to_lab_arr(rgbs: np.ndarray) -> np.ndarray:
+    """Vectorized sRGB (N, 3, 0-255) to CIE Lab (D65), same formula as
+    `_srgb_to_lab`.
+
+    Args:
+        rgbs: (N, 3) array of 8-bit RGB colors.
+
+    Returns:
+        (N, 3) array of (L, a, b) coordinates.
+    """
+    c = rgbs / 255.0
+    lin = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    r, g, b = lin[:, 0], lin[:, 1], lin[:, 2]
+    x = (r * 0.4124564 + g * 0.3575761 + b * 0.1804375) / 0.95047
+    y = r * 0.2126729 + g * 0.7151522 + b * 0.0721750
+    z = (r * 0.0193339 + g * 0.1191920 + b * 0.9503041) / 1.08883
+
+    def f(t: np.ndarray) -> np.ndarray:
+        return np.where(t > 216 / 24389, np.cbrt(t), (841 / 108) * t + 4 / 29)
+
+    fx, fy, fz = f(x), f(y), f(z)
+    return np.stack([116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)], axis=1)
+
+
+_PALETTE_LAB_ARR = _srgb_to_lab_arr(
+    np.array(BEAD_PALETTE, dtype=np.float64)
+)  # (221, 3)
+
+
+def _ciede2000_arr(lab1: np.ndarray, lab2: np.ndarray) -> np.ndarray:
+    """Vectorized CIEDE2000 between every query color and every palette
+    color; the scalar `_ciede2000` formula, element-wise.
+
+    Args:
+        lab1: (N, 3) query Lab colors.
+        lab2: (M, 3) palette Lab colors.
+
+    Returns:
+        (N, M) matrix of perceptual distances.
+    """
+    lab1 = lab1[:, None, :]  # (N, 1, 3) against (M, 3) -> (N, M)
+    L1, a1, b1 = lab1[..., 0], lab1[..., 1], lab1[..., 2]  # (N, 1)
+    L2, a2, b2 = lab2[:, 0], lab2[:, 1], lab2[:, 2]  # (M,)
+
+    C1 = np.hypot(a1, b1)  # (N, 1)
+    C2 = np.hypot(a2, b2)  # (M,)
+    Cbar7 = ((C1 + C2) / 2) ** 7  # (N, M)
+    G = 0.5 * (1 - np.sqrt(Cbar7 / (Cbar7 + 25**7)))
+    a1p = (1 + G) * a1  # (N, M)
+    a2p = (1 + G) * a2
+    C1p = np.hypot(a1p, b1)
+    C2p = np.hypot(a2p, b2)
+    h1p = np.degrees(np.arctan2(b1, a1p)) % 360
+    h2p = np.degrees(np.arctan2(b2, a2p)) % 360
+
+    dLp = L2 - L1
+    dCp = C2p - C1p
+    zero_c = C1p * C2p == 0
+    diff = h2p - h1p
+    dhp = np.where(
+        zero_c,
+        0.0,
+        np.where(
+            np.abs(diff) <= 180,
+            diff,
+            np.where(diff > 180, diff - 360, diff + 360),
+        ),
+    )
+    dHp = 2 * np.sqrt(C1p * C2p) * np.sin(np.radians(dhp) / 2)
+
+    Lbarp = (L1 + L2) / 2
+    Cbarp = (C1p + C2p) / 2
+    hsum = h1p + h2p
+    hbarp = np.where(
+        zero_c,
+        hsum,
+        np.where(
+            np.abs(h1p - h2p) <= 180,
+            hsum / 2,
+            np.where(hsum < 360, (hsum + 360) / 2, (hsum - 360) / 2),
+        ),
+    )
+
+    rad = np.radians
+    T = (
+        1
+        - 0.17 * np.cos(rad(hbarp - 30))
+        + 0.24 * np.cos(rad(2 * hbarp))
+        + 0.32 * np.cos(rad(3 * hbarp + 6))
+        - 0.20 * np.cos(rad(4 * hbarp - 63))
+    )
+    dtheta = 30 * np.exp(-(((hbarp - 275) / 25) ** 2))
+    Cbarp7 = Cbarp**7
+    RC = 2 * np.sqrt(Cbarp7 / (Cbarp7 + 25**7))
+    SL = 1 + 0.015 * (Lbarp - 50) ** 2 / np.sqrt(20 + (Lbarp - 50) ** 2)
+    SC = 1 + 0.045 * Cbarp
+    SH = 1 + 0.015 * Cbarp * T
+    RT = -np.sin(rad(2 * dtheta)) * RC
+    return np.sqrt(
+        (dLp / SL) ** 2
+        + (dCp / SC) ** 2
+        + (dHp / SH) ** 2
+        + RT * (dCp / SC) * (dHp / SH)
+    )
+
+
 def _nearest_bead_index(color: tuple[int, int, int] | list[float]) -> int:
     """Index of the closest bead-palette entry.
 
-    Distance is green-weighted, (2dr)^2 + (4dg)^2 + (3db)^2: human vision
-    resolves greens better than reds and blues, so holding the green channel
-    tight picks more faithful skies and skin tones.
+    Distance is CIEDE2000 in CIE Lab space: perceptually uniform, so
+    skin tones, skies, and pastels pick visibly closer beads than a raw
+    RGB metric would. Cells are clamped and rounded for the cache key
+    (dithering can push error-accumulating cells out of 0-255).
 
     Args:
         color: An RGB color (ints, or float cells while dithering).
 
     Returns:
-        The palette index with the smallest weighted distance.
+        The palette index with the smallest perceptual distance.
     """
-    r, g, b = color
-    return min(
-        range(len(BEAD_PALETTE)),
-        key=lambda i: (
-            4 * (BEAD_PALETTE[i][0] - r) ** 2
-            + 16 * (BEAD_PALETTE[i][1] - g) ** 2
-            + 9 * (BEAD_PALETTE[i][2] - b) ** 2
-        ),
-    )
+    key = tuple(min(255, max(0, round(v))) for v in color)
+    cached = _NEAREST_INDEX_CACHE.get(key)
+    if cached is not None:
+        return cached
+    lab = _srgb_to_lab_arr(np.array([key], dtype=np.float64))  # (1, 3)
+    best = int(np.argmin(_ciede2000_arr(lab, _PALETTE_LAB_ARR)[0]))
+    _NEAREST_INDEX_CACHE[key] = best
+    return best
+
+
+def _nearest_bead_colors_batch(
+    keys: list[tuple[int, int, int]],
+) -> dict[tuple[int, int, int], tuple[int, int, int]]:
+    """Resolve many cell colors to their nearest palette colors in one pass.
+
+    Identical results to calling `_nearest_bead_color` per color (same
+    cache, same metric), but the whole batch shares a single vectorized
+    Lab conversion and CIEDE2000 matrix - per-cell numpy calls would pay
+    the small-array dispatch overhead thousands of times.
+
+    Args:
+        keys: Distinct-or-not RGB keys of the cells to quantize.
+
+    Returns:
+        Mapping from every distinct key to its palette color.
+    """
+    distinct = list(dict.fromkeys(keys))
+    todo = [k for k in distinct if k not in _NEAREST_INDEX_CACHE]
+    if todo:
+        labs = _srgb_to_lab_arr(np.array(todo, dtype=np.float64))
+        for key, row in zip(todo, _ciede2000_arr(labs, _PALETTE_LAB_ARR)):
+            _NEAREST_INDEX_CACHE[key] = int(np.argmin(row))
+    return {k: BEAD_PALETTE[_NEAREST_INDEX_CACHE[k]] for k in distinct}
 
 
 def _nearest_bead_color(
@@ -719,7 +964,7 @@ def _nearest_bead_color(
         color: An RGB color (ints, or float cells while dithering).
 
     Returns:
-        The palette color with the smallest weighted distance.
+        The palette color with the smallest perceptual distance.
     """
     return BEAD_PALETTE[_nearest_bead_index(color)]
 
@@ -783,6 +1028,50 @@ def bead_material_counts(art: AsciiArt) -> dict[str, int] | None:
     return counts
 
 
+def merge_minor_bead_colors(art: AsciiArt) -> int:
+    """Fold low-count colors into the nearest well-used color, in place.
+
+    Shopping for a color that fills only a handful of cells means buying a
+    whole bag for three beads. Each color used in at most MINOR_COLOR_MAX
+    cells is remapped to the perceptually closest color that exceeds the
+    threshold *in this grid*, so no new color is ever introduced. Distance
+    uses the same CIEDE2000 metric as `_nearest_bead_index`.
+
+    Args:
+        art: The bead grid (kind "bead", palette-quantized); modified in
+            place so the art image, chart, and stats stay consistent.
+
+    Returns:
+        The number of colors merged away (0 when there was nothing to
+        merge or no well-used color to merge into).
+    """
+    counts: dict[tuple[int, int, int], int] = {}
+    for row in art.rows:
+        for _, rgb in row:
+            counts[tuple(rgb)] = counts.get(tuple(rgb), 0) + 1
+    majors = {rgb for rgb, n in counts.items() if n > MINOR_COLOR_MAX}
+    if not majors:
+        # Every color is minor (tiny grid): nothing stable to merge into.
+        return 0
+    remap: dict[tuple[int, int, int], tuple[int, int, int]] = {}
+    major_labs = {rgb: _srgb_to_lab(rgb) for rgb in majors}
+    for rgb, n in counts.items():
+        if n <= MINOR_COLOR_MAX:
+            lab = _srgb_to_lab(rgb)
+            remap[rgb] = min(
+                majors,
+                key=lambda m: _ciede2000(lab, major_labs[m]),
+            )
+    if not remap:
+        return 0
+    for row in art.rows:
+        for i, (_, rgb) in enumerate(row):
+            merged = remap.get(tuple(rgb))
+            if merged is not None:
+                row[i] = ("■", merged)
+    return len(remap)
+
+
 def bead_material_lines(counts: dict[str, int]) -> list[str]:
     """Format the materials list as user-facing caption lines.
 
@@ -797,9 +1086,11 @@ def bead_material_lines(counts: dict[str, int]) -> list[str]:
     ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
     lines = [f"材料清单：需要 {len(counts)} 种颜色，共 {total:,} 颗"]
     lines.append("高耗色：" + "、".join(f"{code}×{n:,}" for code, n in ranked[:5]))
-    minor = [code for code, n in ranked if n <= 10]
+    minor = [code for code, n in ranked if n <= MINOR_COLOR_MAX]
     if minor:
-        lines.append(f"另有 {len(minor)} 种少量色（每种不超过 10 颗），建议单独分装")
+        lines.append(
+            f"另有 {len(minor)} 种少量色（每种不超过 {MINOR_COLOR_MAX} 颗），建议单独分装"
+        )
     return lines
 
 

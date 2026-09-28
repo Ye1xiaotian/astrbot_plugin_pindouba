@@ -19,6 +19,7 @@ try:
         AsciiArt,
         bead_material_counts,
         bead_material_lines,
+        merge_minor_bead_colors,
         paint_ascii_art_png,
         paint_bead_chart_png,
         render_ascii_art,
@@ -30,6 +31,7 @@ except (
         AsciiArt,
         bead_material_counts,
         bead_material_lines,
+        merge_minor_bead_colors,
         paint_ascii_art_png,
         paint_bead_chart_png,
         render_ascii_art,
@@ -363,6 +365,12 @@ class PindoubaPlugin(Star):
             )
             return
 
+        # Chart mode folds low-count colors into well-used neighbors before
+        # anything is painted, so art image, chart, and stats all agree.
+        merged_minor = 0
+        if self.config.get("bead_chart", False) and art.kind == "bead":
+            merged_minor = merge_minor_bead_colors(art)
+
         caption_bits = list(notes)
         if scene is not None:
             if scene.get("caption"):
@@ -396,6 +404,8 @@ class PindoubaPlugin(Star):
             else:
                 if not self.config.get("bead_palette", False):
                     caption_bits.append("已按 MARD 色板量化（生成图纸需要）")
+                if merged_minor:
+                    caption_bits.append(f"已合并 {merged_minor} 种少量色")
                 caption_bits.extend(bead_material_lines(counts))
                 chart_path = Path(get_astrbot_temp_path()) / (
                     f"beadchart_{int(time.time())}_{uuid.uuid4().hex[:8]}.png"
