@@ -433,10 +433,10 @@ class PipelineTests(unittest.TestCase):
             return flows
 
         flows = asyncio.run(run())
-        self.assertEqual(len(flows), 2)
+        self.assertEqual(len(flows), 1)  # art and caption share one message
         self.assertTrue(flows[0].image_path)
         self.assertTrue(flows[0].image_path.endswith(".png"))
-        self.assertIn("未配置多模态模型", flows[1].text)
+        self.assertIn("未配置多模态模型", flows[0].text)
 
     def test_generate_flow_with_scene_params_and_cache(self):
         scene_calls = {"n": 0}
@@ -462,16 +462,16 @@ class PipelineTests(unittest.TestCase):
             return event, flows
 
         event, flows = asyncio.run(run())
-        # ack + image + caption
+        # ack, then one combined message: image + caption
         self.assertEqual(flows[0].text, main.PROCESSING_TEXT)
         self.assertTrue(flows[1].image_path)
-        self.assertIn("识别：测试猫", flows[2].text)
+        self.assertIn("识别：测试猫", flows[1].text)
         self.assertEqual(scene_calls["n"], 1)
         # second run hits the scene cache: no new model call, no ack
         event2, flows2 = asyncio.run(run())
         self.assertEqual(scene_calls["n"], 1)
-        self.assertEqual(len(flows2), 2)
-        self.assertIn("识别：测试猫", flows2[1].text)
+        self.assertEqual(len(flows2), 1)
+        self.assertIn("识别：测试猫", flows2[0].text)
 
     def test_generate_flow_degrades_on_model_error(self):
         class BrokenProvider:
@@ -492,7 +492,7 @@ class PipelineTests(unittest.TestCase):
         flows = asyncio.run(run())
         self.assertEqual(flows[0].text, main.PROCESSING_TEXT)
         self.assertTrue(flows[1].image_path)  # art is still rendered
-        self.assertIn("模型不可用，已按原图直接渲染", flows[2].text)
+        self.assertIn("模型不可用，已按原图直接渲染", flows[1].text)
 
     def test_generate_flow_text_mode(self):
         self.plugin.config["send_mode"] = "text"
@@ -557,12 +557,12 @@ class PipelineTests(unittest.TestCase):
             ]
 
         flows = asyncio.run(run("http://x/a.jpg"))
-        self.assertEqual(len(flows), 3)
+        self.assertEqual(len(flows), 2)  # ack, then image + caption in one
         # Same picture bytes under a fresh URL: cache hit, no second call.
         flows = asyncio.run(run("http://x/b.jpg"))
         self.assertEqual(scene_calls["n"], 1)
-        self.assertEqual(len(flows), 2)
-        self.assertIn("识别：测试猫", flows[1].text)
+        self.assertEqual(len(flows), 1)
+        self.assertIn("识别：测试猫", flows[0].text)
 
     def test_generate_flow_rejects_elongated_image(self):
         self.plugin.context = type("Ctx", (), {})()
@@ -619,33 +619,38 @@ class BeadChartFlowTests(unittest.TestCase):
     def test_chart_flow_adds_chart_and_materials(self):
         self.plugin.config["bead_chart"] = True
         event, flows = self._run()
-        self.assertEqual(len(flows[0].image_paths), 2)  # art + chart
-        caption = flows[1].text
+        # One message: art + chart images, then the materials caption.
+        self.assertEqual(len(flows), 1)
+        self.assertEqual(len(flows[0].image_paths), 2)
+        caption = flows[0].text
         self.assertIn("已按 MARD 色板量化", caption)  # forced quantization note
         self.assertIn("材料清单：", caption)
         self.assertIn("高耗色：", caption)
         self.assertIn("共", caption)
-        self.assertTrue(event.results)  # both results went through the event
+        self.assertTrue(event.results)
 
     def test_chart_flow_without_forced_quant_note(self):
         self.plugin.config["bead_chart"] = True
         self.plugin.config["bead_palette"] = True
         _, flows = self._run()
+        self.assertEqual(len(flows), 1)
         self.assertEqual(len(flows[0].image_paths), 2)
-        self.assertNotIn("已按 MARD", flows[1].text)
-        self.assertIn("材料清单：", flows[1].text)
+        self.assertNotIn("已按 MARD", flows[0].text)
+        self.assertIn("材料清单：", flows[0].text)
 
     def test_chart_skipped_for_non_bead_mode(self):
         self.plugin.config["bead_chart"] = True
         self.plugin.config["render_mode"] = "braille"
         _, flows = self._run()
+        self.assertEqual(len(flows), 1)
         self.assertEqual(len(flows[0].image_paths), 1)
-        self.assertIn("仅支持拼豆", flows[1].text)
+        self.assertIn("仅支持拼豆", flows[0].text)
 
     def test_chart_off_keeps_single_image(self):
         _, flows = self._run()
+        self.assertEqual(len(flows), 1)
         self.assertEqual(len(flows[0].image_paths), 1)
-        self.assertNotIn("材料清单", flows[1].text or "")
+        self.assertNotIn("材料清单", flows[0].text or "")
 
 
 class AvatarStubImage(main.Image):
@@ -699,7 +704,7 @@ class AvatarTests(unittest.TestCase):
         )
         self.assertIn("nk=u1", AvatarStubImage.last_url)
         self.assertTrue(flows[0].image_path)
-        self.assertIn("已使用你的头像", flows[1].text)
+        self.assertIn("已使用你的头像", flows[0].text)
 
     def test_avatar_at_trigger_uses_at_target(self):
         at = main.At()
@@ -709,7 +714,7 @@ class AvatarTests(unittest.TestCase):
         event.chain = [at]
         flows = self._drain(self.plugin.avatar_at_trigger(event))
         self.assertIn("nk=12345", AvatarStubImage.last_url)
-        self.assertIn("@小明", flows[1].text)
+        self.assertIn("@小明", flows[0].text)
 
     def test_avatar_at_trigger_unnamed_target(self):
         at = main.At()
@@ -719,7 +724,7 @@ class AvatarTests(unittest.TestCase):
         event.chain = [at]
         flows = self._drain(self.plugin.avatar_at_trigger(event))
         self.assertIn("nk=67890", AvatarStubImage.last_url)
-        self.assertIn("已使用对方的头像", flows[1].text)
+        self.assertIn("已使用对方的头像", flows[0].text)
 
     def test_avatar_at_trigger_needs_a_target(self):
         flows = self._drain(self.plugin.avatar_at_trigger(FakeEvent()))
@@ -763,8 +768,9 @@ class AvatarTests(unittest.TestCase):
         flows = self._drain(
             self.plugin._handle_avatar(FakeEvent(), None, "已使用你的头像。")
         )
+        self.assertEqual(len(flows), 1)
         self.assertEqual(len(flows[0].image_paths), 2)
-        self.assertIn("材料清单：", flows[1].text)
+        self.assertIn("材料清单：", flows[0].text)
 
 
 class FakeResp:

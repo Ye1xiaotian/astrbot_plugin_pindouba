@@ -299,7 +299,8 @@ class PindoubaPlugin(Star):
             avatar: Avatar mode - always skip the VLM (fast, no API cost).
 
         Yields:
-            Message results: the processing ack, then the rendered art.
+            Message results: the processing ack (VLM path), then one combined
+            message holding the art/chart images and the caption text.
         """
         image_ref = image.url or image.file or ""
         if not image_ref:
@@ -411,9 +412,10 @@ class PindoubaPlugin(Star):
                         "图纸尺寸超出上限（格子数过多），仅提供材料清单"
                     )
 
-        yield result
+        # One message: art (and chart) images first, caption text last.
         if caption_bits:
-            yield event.make_result().message("\n".join(caption_bits))
+            result.message("\n".join(caption_bits))
+        yield result
 
     async def _extract_scene(self, provider: Provider, image_ref: str) -> dict:
         """Ask the VLM for renderer parameters (subject crop box, caption).
