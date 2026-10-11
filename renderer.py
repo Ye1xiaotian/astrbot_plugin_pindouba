@@ -294,7 +294,8 @@ class AsciiArt:
 
     rows: list[list[tuple[str, tuple[int, int, int]]]]
     kind: str = "ascii"
-    """ "ascii" (font-painted) or "braille" (dot-painted). """
+    """ "ascii" (font-painted), "braille" (dot-painted), or "bead"
+    (solid-square mosaic painter). """
 
     @property
     def width(self) -> int:
@@ -518,8 +519,11 @@ def _render_bead(
 
     # Without dithering every cell is independent, so quantize the whole
     # grid in one vectorized pass instead of per-cell palette searches.
-    keys = [tuple(cell) for cell in cells]
-    lut = _nearest_bead_colors_batch(keys) if palette and not dither else None
+    keys: list[tuple[int, int, int]] | None = None
+    lut: dict[tuple[int, int, int], tuple[int, int, int]] | None = None
+    if palette and not dither:
+        keys = [tuple(cell) for cell in cells]
+        lut = _nearest_bead_colors_batch(keys)
 
     rows_out: list[list[tuple[str, tuple[int, int, int]]]] = []
     for r in range(rows):
@@ -669,9 +673,10 @@ def _render_line(
         blurred.filter(ImageFilter.Kernel((3, 3), ky, scale=1)),
         blurred.filter(ImageFilter.Kernel((3, 3), tuple(-v for v in ky), scale=1)),
     )
-    mag = ImageChops.add(gx, gy).tobytes()
+    merged = ImageChops.add(gx, gy)
+    mag = merged.tobytes()
 
-    hist = ImageChops.add(gx, gy).histogram()
+    hist = merged.histogram()
     threshold = _percentile_threshold(hist, cols * rows * scale * scale, edge_percent)
 
     small = img.resize((cols, rows), Image.LANCZOS)
@@ -797,7 +802,11 @@ def _ciede2000(
     )
 
 
+_NEAREST_CACHE_MAX = 100_000
 _NEAREST_INDEX_CACHE: dict[tuple[int, int, int], int] = {}
+"""Pure memo of deterministic lookups; cleared wholesale (never partially)
+once it grows past _NEAREST_CACHE_MAX, keeping a long-lived bot's memory
+bounded. Dithered renders can add ~cols*rows distinct keys per image."""
 
 
 def _srgb_to_lab_arr(rgbs: np.ndarray) -> np.ndarray:
@@ -926,6 +935,8 @@ def _nearest_bead_index(color: tuple[int, int, int] | list[float]) -> int:
         return cached
     lab = _srgb_to_lab_arr(np.array([key], dtype=np.float64))  # (1, 3)
     best = int(np.argmin(_ciede2000_arr(lab, _PALETTE_LAB_ARR)[0]))
+    if len(_NEAREST_INDEX_CACHE) > _NEAREST_CACHE_MAX:
+        _NEAREST_INDEX_CACHE.clear()
     _NEAREST_INDEX_CACHE[key] = best
     return best
 
@@ -949,6 +960,8 @@ def _nearest_bead_colors_batch(
     distinct = list(dict.fromkeys(keys))
     todo = [k for k in distinct if k not in _NEAREST_INDEX_CACHE]
     if todo:
+        if len(_NEAREST_INDEX_CACHE) > _NEAREST_CACHE_MAX:
+            _NEAREST_INDEX_CACHE.clear()
         labs = _srgb_to_lab_arr(np.array(todo, dtype=np.float64))
         for key, row in zip(todo, _ciede2000_arr(labs, _PALETTE_LAB_ARR)):
             _NEAREST_INDEX_CACHE[key] = int(np.argmin(row))
