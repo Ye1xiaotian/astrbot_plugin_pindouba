@@ -15,6 +15,7 @@ from astrbot.api.star import Context, Star
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
 try:
+    from .eva import render_eva_png
     from .renderer import (
         AsciiArt,
         bead_material_counts,
@@ -27,6 +28,7 @@ try:
 except (
     ImportError
 ):  # Fallback when the plugin dir is imported as a plain module (tests).
+    from eva import render_eva_png
     from renderer import (
         AsciiArt,
         bead_material_counts,
@@ -66,6 +68,14 @@ AVATAR_PLATFORM_TEXT = "拼头像目前只支持 QQ，其他平台先用 /拼豆
 AVATAR_QLOGO_URL = "https://q1.qlogo.cn/g?b=qq&nk={qq}&s=640"
 """QQ avatar CDN: a user's avatar is addressable by QQ number alone, no API
 call needed (640x640, GIF avatars included)."""
+EVA_TRIGGER_REGEX = r"/eva\b"
+"""/eva: standalone EVA-stylize trigger (word-boundary so /evaluate etc.
+do not fire); doubles as the dashboard command display."""
+EVA_USAGE_TEXT = (
+    "用法：发送 /eva 并附带一张图片，我会在原图上做 EVA 风格化处理。\n"
+    "也可以：引用一张图片回复 /eva，或先发送图片、再在 10 分钟内发送 /eva。\n"
+    "（本地直接处理，不调用模型；当前消息未检测到图片）"
+)
 
 # Substrings of provider errors that indicate a model/config problem rather
 # than a transient failure; they make the degrade caption more specific.
@@ -163,6 +173,17 @@ class PindoubaPlugin(Star):
         name = str(ats[0].name or "").strip()
         note = f"已使用 @{name} 的头像。" if name else "已使用对方的头像。"
         async for result in self._handle_avatar(event, str(ats[0].qq), note):
+            yield result
+
+    @filter.regex(EVA_TRIGGER_REGEX)
+    async def eva_trigger(self, event: AstrMessageEvent):
+        """/eva: EVA-stylize the attached image on the original itself."""
+        # Master switch off = the feature does not exist; stay silent.
+        if not self.config.get("enable_eva", True):
+            return
+        if not self._claim(event):
+            return
+        async for result in self._handle_eva(event):
             yield result
 
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -276,6 +297,75 @@ class PindoubaPlugin(Star):
         async for result in self._generate_flow(event, image, [note], avatar=True):
             yield result
 
+    async def _handle_eva(
+        self, event: AstrMessageEvent
+    ) -> AsyncGenerator[MessageEventResult, None]:
+        """EVA-stylize an image on the original itself; pure local path.
+
+        Shares the image-resolution (direct / quoted / 10-minute recall),
+        cooldown, and claim machinery with the bead triggers, but never
+        calls the VLM and never renders a pixel grid - eva.py scales the
+        source image and applies the NERV console treatment directly.
+
+        Args:
+            event: The triggering message event.
+
+        Yields:
+            Message results: usage help, cooldown notice, the failure
+            fallbacks, or one message holding the stylized image.
+        """
+        direct = _extract_images(event.get_messages())
+        if direct:
+            image = direct[0]
+        else:
+            recalled = self._recall_image(event.unified_msg_origin)
+            if recalled is None:
+                yield event.make_result().message(EVA_USAGE_TEXT)
+                return
+            image = Image(file=recalled)
+
+        image_ref = image.url or image.file or ""
+        if not image_ref:
+            yield event.make_result().message(
+                "图片数据异常（无可用的图片地址），请重新发送。"
+            )
+            return
+
+        ok, notice = self._cooldown_gate(event)
+        if not ok:
+            if notice:
+                yield event.make_result().message(notice)
+            return
+
+        try:
+            image_path = await image.convert_to_file_path()
+        except Exception as e:
+            logger.error(f"[pindouba] eva image download failed: {e}")
+            yield event.make_result().message(
+                "图片处理失败（下载失败或格式不支持），请换一张图片试试。"
+            )
+            return
+
+        out_path = Path(get_astrbot_temp_path()) / (
+            f"eva_{int(time.time())}_{uuid.uuid4().hex[:8]}.png"
+        )
+        try:
+            render_eva_png(image_path, out_path)
+        except ValueError as e:
+            logger.warning(f"[pindouba] eva rendering rejected: {e}")
+            yield event.make_result().message(
+                "这张图不适合直接拼豆（尺寸过小或长宽比太悬殊，比如超长截图），"
+                "裁剪一下或换一张试试。"
+            )
+            return
+        except Exception as e:
+            logger.error(f"[pindouba] eva rendering failed: {e}")
+            yield event.make_result().message(
+                "图片处理失败（生成图片时出错），请重试或换一张图片试试。"
+            )
+            return
+        yield event.make_result().file_image(str(out_path))
+
     async def _generate_flow(
         self,
         event: AstrMessageEvent,
@@ -349,6 +439,16 @@ class PindoubaPlugin(Star):
                     else:
                         self._cache_put(content_key, scene)
 
+        caption_bits = list(notes)
+        if scene is not None:
+            if scene.get("caption"):
+                caption_bits.append(f"识别：{scene['caption']}")
+        elif want_scene:
+            if provider is None:
+                caption_bits.append("未配置多模态模型，按原图直接渲染")
+            elif degraded_reason:
+                caption_bits.append(f"{degraded_reason}，已按原图直接渲染")
+
         try:
             art = self._render(image_path, scene)
         except ValueError as e:
@@ -361,7 +461,7 @@ class PindoubaPlugin(Star):
         except Exception as e:
             logger.error(f"[pindouba] rendering failed: {e}")
             yield event.make_result().message(
-                "图片处理失败（下载失败或格式不支持），请换一张图片试试。"
+                "图片处理失败（渲染出错或格式不支持），请换一张图片试试。"
             )
             return
 
@@ -370,16 +470,6 @@ class PindoubaPlugin(Star):
         merged_minor = 0
         if self.config.get("bead_chart", False) and art.kind == "bead":
             merged_minor = merge_minor_bead_colors(art)
-
-        caption_bits = list(notes)
-        if scene is not None:
-            if scene.get("caption"):
-                caption_bits.append(f"识别：{scene['caption']}")
-        elif want_scene:
-            if provider is None:
-                caption_bits.append("未配置多模态模型，按原图直接渲染")
-            elif degraded_reason:
-                caption_bits.append(f"{degraded_reason}，已按原图直接渲染")
 
         if self.config.get("send_mode", "image") == "text" and art.kind != "bead":
             text = art.text
@@ -391,7 +481,16 @@ class PindoubaPlugin(Star):
         out_path = Path(get_astrbot_temp_path()) / (
             f"charart_{int(time.time())}_{uuid.uuid4().hex[:8]}.png"
         )
-        paint_ascii_art_png(art, out_path, color=bool(self.config.get("color", True)))
+        try:
+            paint_ascii_art_png(
+                art, out_path, color=bool(self.config.get("color", True))
+            )
+        except Exception as e:
+            logger.error(f"[pindouba] art painting failed: {e}")
+            yield event.make_result().message(
+                "图片处理失败（生成图片时出错），请重试或换一张图片试试。"
+            )
+            return
         result = event.make_result().file_image(str(out_path))
 
         chart_on = bool(self.config.get("bead_chart", False))
@@ -645,6 +744,14 @@ class PindoubaPlugin(Star):
                 return False, f"拼豆冷却中，请 {remaining} 秒后再试。"
             return False, ""
         self._last_trigger[key] = now
+        # Drop entries that can no longer gate anything (age >= cooldown),
+        # so the dict stays bounded by recently-active users.
+        if len(self._last_trigger) > CACHE_MAX_ENTRIES:
+            expired = [
+                k for k, ts in self._last_trigger.items() if now - ts >= cooldown
+            ]
+            for k in expired:
+                del self._last_trigger[k]
         return True, ""
 
     def _claim(self, event: AstrMessageEvent) -> bool:

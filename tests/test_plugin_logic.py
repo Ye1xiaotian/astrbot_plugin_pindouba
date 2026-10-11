@@ -1,4 +1,4 @@
-"""Self-contained logic tests for astrbot_plugin_kaomoji (character-art plugin).
+"""Self-contained logic tests for astrbot_plugin_pindouba (bead-art plugin).
 
 Runs with a plain Python interpreter (no astrbot install required): when the
 real `astrbot` package is unavailable, minimal stubs are injected first.
@@ -47,9 +47,6 @@ except ImportError:
 
     class _Filter:
         EventMessageType = type("EventMessageType", (), {"ALL": "ALL"})
-
-        def command(self, *a, **k):
-            return lambda f: f
 
         def regex(self, *a, **k):
             return lambda f: f
@@ -150,6 +147,7 @@ DEFAULT_CONFIG = {
     "color": True,
     "send_mode": "image",
     "allow_at_trigger": False,
+    "enable_eva": True,
     "cooldown_seconds": 30,
     "cooldown_notice": True,
     "enable_cache": True,
@@ -788,6 +786,54 @@ class FakeResp:
 
     def __init__(self, text: str):
         self.completion_text = text
+
+
+class EvaTriggerTests(unittest.TestCase):
+    """The standalone /eva entry: switch, regex, and local pipeline."""
+
+    def setUp(self):
+        self.plugin = make_plugin(dict(DEFAULT_CONFIG))
+        self._orig_image = main.Image
+        main.Image = AvatarStubImage
+        self.addCleanup(setattr, main, "Image", self._orig_image)
+        AvatarStubImage.last_url = ""
+
+    def _drain(self, agen):
+        async def collect():
+            return [r async for r in agen]
+
+        return asyncio.run(collect())
+
+    def _event_with_image(self):
+        event = FakeEvent()
+        event.chain = [AvatarStubImage(file="", url="http://x/e.jpg")]
+        return event
+
+    def test_trigger_regex_word_boundary(self):
+        for text in ["/eva", "/eva 看这个"]:
+            self.assertRegex(text, main.EVA_TRIGGER_REGEX, msg=text)
+        for text in ["/evaluate", "eva", "/eva酱"]:
+            self.assertNotRegex(text, main.EVA_TRIGGER_REGEX, msg=text)
+
+    def test_disabled_switch_is_silent(self):
+        self.plugin.config["enable_eva"] = False
+        flows = self._drain(self.plugin.eva_trigger(self._event_with_image()))
+        self.assertEqual(flows, [])
+
+    def test_eva_flow_single_local_message(self):
+        flows = self._drain(self.plugin.eva_trigger(self._event_with_image()))
+        self.assertEqual(len(flows), 1)
+        self.assertEqual(len(flows[0].image_paths), 1)
+        self.assertIsNone(flows[0].text)  # no caption: pure local path
+
+    def test_eva_no_image_shows_usage(self):
+        flows = self._drain(self.plugin.eva_trigger(FakeEvent()))
+        self.assertIn("用法", flows[0].text)
+
+    def test_eva_is_cooldown_gated(self):
+        self._drain(self.plugin.eva_trigger(self._event_with_image()))
+        flows = self._drain(self.plugin.eva_trigger(self._event_with_image()))
+        self.assertIn("冷却", flows[0].text)
 
 
 if __name__ == "__main__":

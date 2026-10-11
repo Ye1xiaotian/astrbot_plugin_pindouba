@@ -83,6 +83,12 @@
         "type": "bool",
         "default": false
     },
+    "enable_eva": {
+        "description": "EVA 风格化总开关",
+        "hint": "开启后 /eva + 图片 可用：按\"One Last Kiss\"封面风格在原图上做 EVA 风格化（白底线迹 + 对角渐变着色 + 版画软化，不像素化、不调用模型）。关闭后 /eva 静默无响应",
+        "type": "bool",
+        "default": true
+    },
     "cooldown_seconds": {
         "description": "冷却时间（秒）",
         "hint": "同一个人在同一会话两次触发的最小间隔，防止刷屏；群聊里各人互不影响。0 表示不冷却",
