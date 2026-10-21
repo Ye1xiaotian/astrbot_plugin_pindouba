@@ -17,6 +17,7 @@ from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 try:
     from .eva import render_eva_png
     from .renderer import (
+        MAX_ASPECT_RATIO,
         AsciiArt,
         bead_material_counts,
         bead_material_lines,
@@ -30,6 +31,7 @@ except (
 ):  # Fallback when the plugin dir is imported as a plain module (tests).
     from eva import render_eva_png
     from renderer import (
+        MAX_ASPECT_RATIO,
         AsciiArt,
         bead_material_counts,
         bead_material_lines,
@@ -471,6 +473,8 @@ class PindoubaPlugin(Star):
         if self.config.get("bead_chart", False) and art.kind == "bead":
             merged_minor = merge_minor_bead_colors(art)
 
+        # This "text form = non-bead + send_mode text" predicate mirrors the
+        # max_rows choice in _render: keep the two in sync when adding modes.
         if self.config.get("send_mode", "image") == "text" and art.kind != "bead":
             text = art.text
             if caption_bits:
@@ -582,11 +586,22 @@ class PindoubaPlugin(Star):
         # cannot be mapped to purchasable MARD codes.
         if not palette and self.config.get("bead_chart", False) and mode == "bead":
             palette = True
+        width = int(self.config.get("char_width", 80))
+        # The renderer's 110-row default guards text output against chat
+        # flooding; applied to a PNG it would silently shrink the requested
+        # columns on portrait images (rows = height/width * cols). Bead
+        # always paints a PNG, the char modes only when not in text form;
+        # there the cap stays at 110.
+        if mode == "bead" or self.config.get("send_mode", "image") == "image":
+            max_rows = int(width * MAX_ASPECT_RATIO)
+        else:
+            max_rows = 110
         art = render_ascii_art(
             image_path,
             mode=mode,
-            width=int(self.config.get("char_width", 80)),
+            width=width,
             crop_box=crop,
+            max_rows=max_rows,
             bead_palette=palette,
             bead_dither=dither,
         )

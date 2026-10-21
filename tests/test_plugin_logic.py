@@ -592,6 +592,42 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("图片数据异常", flows[0].text)
 
 
+class RenderWidthTests(unittest.TestCase):
+    """char_width must survive the renderer row cap in image form.
+
+    Regression: portrait images used to collapse every width above
+    110 * (w/h) columns to the same clamped grid (3:1 image at width 120
+    came out 37 columns wide), so adjusting the config changed nothing.
+    """
+
+    def setUp(self):
+        self.plugin = make_plugin(DEFAULT_CONFIG)
+        from PIL import Image
+
+        # 1:3 portrait (inside the MAX_ASPECT_RATIO=6 guard, wide enough
+        # for the char modes not to clamp columns by source pixels).
+        img = Image.new("RGB", (400, 1200), (120, 40, 40))
+        self.png_path = str(Path(tempfile.mkdtemp()) / "portrait.png")
+        img.save(self.png_path)
+
+    def test_image_form_holds_requested_columns(self):
+        self.plugin.config["render_mode"] = "bead"
+        self.plugin.config["char_width"] = 120
+        art = self.plugin._render(self.png_path, None)
+        self.assertEqual(art.width, 120)
+        self.assertEqual(art.height, 360)
+
+    def test_text_form_keeps_row_cap(self):
+        self.plugin.config["render_mode"] = "shading"
+        self.plugin.config["send_mode"] = "text"
+        self.plugin.config["char_width"] = 120
+        art = self.plugin._render(self.png_path, None)
+        # Chat-flood guard: 110 rows max, columns shrink to keep aspect
+        # (rows = h/w * cols * 0.5 char-cell correction).
+        self.assertEqual(art.height, 110)
+        self.assertEqual(art.width, 73)
+
+
 class BeadChartFlowTests(unittest.TestCase):
     """End-to-end chart/materials behavior of _generate_flow (pure path)."""
 
